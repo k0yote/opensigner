@@ -3,7 +3,6 @@ import { defineConfig } from 'vocs/config'
 import { sidebar } from './sidebar'
 
 export default defineConfig({
-  baseUrl: 'https://opensigner.dev',
   title: 'OpenSigner | Non-Custodial Wallet Key Management',
   description: 'Open-source and non-custodial and self-hostable private key management.',
   logoUrl: {
