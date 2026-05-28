@@ -1,0 +1,4 @@
+.vocs/
+dist/
+src/pages.gen.ts
+public/diagrams/

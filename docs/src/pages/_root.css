@@ -1,0 +1,30 @@
+.opensigner-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--vocs-color-text);
+  opacity: 0.7;
+}
+
+.opensigner-footer__logo {
+  height: 1.25rem;
+  width: auto;
+}
+
+/* Light is the default; dark logo is revealed when Vocs sets color-scheme: dark. */
+.opensigner-footer__logo--dark {
+  display: none;
+}
+
+:root[style*='color-scheme:dark'] .opensigner-footer__logo--light,
+:root[style*='color-scheme: dark'] .opensigner-footer__logo--light {
+  display: none;
+}
+
+:root[style*='color-scheme:dark'] .opensigner-footer__logo--dark,
+:root[style*='color-scheme: dark'] .opensigner-footer__logo--dark {
+  display: inline-block;
+}

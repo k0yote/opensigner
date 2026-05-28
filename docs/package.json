@@ -11,13 +11,17 @@
     "install:d2": "curl -fsSL https://d2lang.com/install.sh | sh -s --"
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.2.2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "swagger-ui": "^5.26.0",
     "swagger-ui-react": "^5.26.0",
-    "tailwindcss": "^4.2.2",
+    "vocs": "^2.0.4",
+    "waku": "^1.0.0-beta.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
     "typescript": "^5.8.3",
-    "vocs": "^1.0.12"
+    "vite": "^8.0.0"
   }
 }

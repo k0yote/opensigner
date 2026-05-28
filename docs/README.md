@@ -37,7 +37,7 @@ Install the [d2 vscode extension](https://d2lang.com/tour/vscode/) to edit the d
 
 The most relevant files and directories are:
 
-- `pages/` - contains the actual content of the web pages in markdown (`.mdx`).
+- `src/pages/` - contains the actual content of the web pages in markdown (`.mdx`).
 - `sidebar.ts` - contains an index with every page so users can access them from the sidebar. Pages need to be added manually.
 - `public/` - everything in this directory is publicly exposed as a static file from the root path. For example, `public/manifest.json`
 can be retrieved through the URL `https://our.endpoint.example/manifest.json`.
@@ -45,4 +45,4 @@ can be retrieved through the URL `https://our.endpoint.example/manifest.json`.
 `public/diagrams` when building the project. Multi-frame diagrams (those with `scenarios` in their `.d2` file contents)
 generate multiple `.svg` output files for a single `.d2` input file.
 - `public/swagger` - contains every swagger definition present in the documentation.
-- `lib/` - contains the `tsx` files used to render dynamic content in the pages (`.mdx` files).
+- `src/lib/` - contains the `tsx` files used to render dynamic content in the pages (`.mdx` files).

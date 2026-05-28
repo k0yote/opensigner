@@ -9,7 +9,6 @@ RUN apk add --no-cache curl git make
 RUN curl -fsSL https://d2lang.com/install.sh | sh -s --
 
 COPY . .
-COPY ./tsconfig.base.container.json ../tsconfig.base.json
 
 # Install TS dependencies
 RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
