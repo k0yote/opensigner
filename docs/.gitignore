@@ -2,3 +2,5 @@
 dist/
 src/pages.gen.ts
 public/diagrams/
+public/sitemap.xml
+public/robots.txt
