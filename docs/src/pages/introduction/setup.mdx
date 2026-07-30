@@ -45,14 +45,12 @@ credential every reader of this repository already knows. Copy `.env.example` to
 | `JWT_SECRET` | Auth service | Application secret for the auth service. Signs session cookies and encrypts the JWKS signing key at rest. Minimum 32 characters; generate with `openssl rand -base64 48`. The service refuses to start if this is unset or left at a library default. |
 | `SHARE_ENCRYPTION_KEY` | Hot storage | AES-256 key for encrypting shares at rest. Exactly 64 hex characters (32 bytes). Generate with `openssl rand -hex 32`. |
 | `POSTGRES_PASSWORD` | PostgreSQL | Superuser password. |
-| `MYSQL_ROOT_PASSWORD` | MySQL | Root password. |
-| `MYSQL_PASSWORD` | MySQL | Application user password. |
 | `AUTH_SERVICE_DB_PASS` | Auth service | Postgres password the auth service connects with — usually the same value as `POSTGRES_PASSWORD`. |
 | `HOT_STORAGE_DB_PASS` | Hot storage | Postgres password hot storage connects with — usually the same value as `POSTGRES_PASSWORD`. |
-| `COLD_STORAGE_DB_PASS` | Cold storage | MySQL password cold storage connects with — usually the same value as `MYSQL_PASSWORD`. |
+| `COLD_STORAGE_DB_PASS` | Cold storage | Postgres password cold storage connects with — usually the same value as `POSTGRES_PASSWORD`. |
 
 :::warning[Set the database passwords before the first start]
-PostgreSQL and MySQL fix their passwords when the data volume is first
+PostgreSQL fixes its passwords when the data volume is first
 initialised. Changing these values later does not update an existing volume: you
 would need `ALTER USER` against the running database, or a fresh volume. Decide
 them before the first `make run`.

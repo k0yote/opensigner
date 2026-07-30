@@ -1,6 +1,6 @@
 ---
 title: Shield component
-description: Explore the OpenSigner Shield cold storage component built in Go with MySQL, supporting password, passkey, and automatic recovery with OTP for key shares.
+description: Explore the OpenSigner Shield cold storage component built in Go with PostgreSQL, supporting password, passkey, and automatic recovery with OTP for key shares.
 ---
 
 import { JsonLd, techArticle } from '../../lib/jsonld';
@@ -21,7 +21,7 @@ There are a couple of exceptions for this: handling project and authentication p
 
 In any case, the API specifics can be found in [Shield's official repository](https://github.com/openfort-xyz/shield) `README.md`.
 
-Shield is fully written in Go and it relies on a MySQL-compatible database for its persistence layer.
+Shield is fully written in Go and it relies on a PostgreSQL database for its persistence layer.
 
 All database interactions are done using Go's ORM, `gorm`. Database migrations are done via `goose`.
 
@@ -56,7 +56,7 @@ Shield also features mock entity repositories. This allows anyone to run shield'
 
 ## Prerequisites
 
-Shield requires a MySQL-compatible database. **Shield uses MariaDB for development.** Configure the following environment variables
+Shield requires a PostgreSQL database. Configure the following environment variables
 
 ```
 # DB related fields, those do NOT have a default value
@@ -206,4 +206,4 @@ OpenSigner also stores the environment in which the passkey was created. This in
 - See how [users and projects](/introduction/users) authenticate against Shield.
 - Automatic recovery can require [OTP](/components/cold_storage/otp); compare options in [Recovery methods](/security/recovery-methods).
 
-<JsonLd data={techArticle({ headline: 'Shield component', description: 'Explore the OpenSigner Shield cold storage component built in Go with MySQL, supporting password, passkey, and automatic recovery with OTP for key shares.', path: '/components/shield' })} />
+<JsonLd data={techArticle({ headline: 'Shield component', description: 'Explore the OpenSigner Shield cold storage component built in Go with PostgreSQL, supporting password, passkey, and automatic recovery with OTP for key shares.', path: '/components/shield' })} />

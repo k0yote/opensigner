@@ -193,8 +193,6 @@ jobs:
           JWT_SECRET: ci-placeholder-secret-at-least-32-characters-long
           SHARE_ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
           POSTGRES_PASSWORD: ci-placeholder
-          MYSQL_ROOT_PASSWORD: ci-placeholder
-          MYSQL_PASSWORD: ci-placeholder
           AUTH_SERVICE_DB_PASS: ci-placeholder
           HOT_STORAGE_DB_PASS: ci-placeholder
           COLD_STORAGE_DB_PASS: ci-placeholder

@@ -82,9 +82,9 @@ cp .env.example .env
 # then fill in every REQUIRED value; each has a generator command in the comments
 ```
 
-> **Set the database passwords before the first start.** PostgreSQL and MySQL fix
-> their passwords when the data volume is first created, so changing them later
-> does not update an existing volume.
+> **Set the database passwords before the first start.** PostgreSQL fixes its
+> passwords when the data volume is first created, so changing them later does
+> not update an existing volume.
 
 Build the project:
 
@@ -99,7 +99,7 @@ make run
 ```
 
 > `make clean` is **destructive**: it runs `docker compose down --rmi all -v`, and
-> the `-v` deletes the volumes, wiping both databases. To stop the stack while
+> the `-v` deletes the volume, wiping the databases. To stop the stack while
 > keeping your data, use `docker compose down`.
 
 Services exposed by default:
@@ -114,10 +114,10 @@ Services exposed by default:
 To start a subset of services (for example if you already have a DB or auth), remove services from the `docker-compose` command:
 
 ```bash
-docker-compose up postgres mysql auth_service iframe iframe-sample hot_storage cold_storage docs
+docker-compose up postgres auth_service iframe iframe-sample hot_storage cold_storage docs
 ```
 
-We also provide `docker-compose.map.db.ports.yml` to map the internal Postgres and MySQL ports to host ports `7056` and `7057`:
+We also provide `docker-compose.map.db.ports.yml` to map the internal Postgres port to host port `7056`:
 
 ```bash
 docker-compose -f docker-compose.yml -f docker-compose.map.db.ports.yml up --build

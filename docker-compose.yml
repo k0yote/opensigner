@@ -20,28 +20,6 @@ services:
       timeout: 4s
       retries: 10
 
-  mysql:
-    image: mysql:8.4
-    container_name: ofmysql
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be set}
-      MYSQL_DATABASE: ${MYSQL_SHIELD_DATABASE:-shield}
-      MYSQL_USER: ${MYSQL_USER:-mysql_user}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD must be set}
-    volumes:
-      - of_mysql_data:/var/lib/mysql
-    networks:
-      - backend_network
-    expose:
-      - "3306"
-    restart: always
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$$MYSQL_ROOT_PASSWORD"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 30s
-
   iframe:
     container_name: iframe
     volumes:
@@ -255,4 +233,3 @@ secrets:
 
 volumes:
   of_postgres_data:
-  of_mysql_data:
