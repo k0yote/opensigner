@@ -9,7 +9,7 @@
     "dev": "vocs dev",
     "diagrams": "./diagrams/gen.sh",
     "preview": "vocs preview",
-    "install:d2": "curl -fsSL https://d2lang.com/install.sh | sh -s --",
+    "install:d2": "./scripts/install-d2.sh",
     "check:types": "tsc --noEmit",
     "seo": "node ./scripts/generate-seo-files.mjs",
     "check:sitemap": "node ./scripts/check-sitemap.mjs",
