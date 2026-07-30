@@ -1,17 +1,41 @@
-FROM golang:1.24.5-alpine3.22
+# Base images are pinned by digest, not tag. Tags are mutable, so a tag alone
+# means the image a build produces today need not match the one it produced
+# yesterday.
+FROM golang:1.25.11-alpine3.22@sha256:65b4400aee0927412e9ed791a11893273a49d55df24841f7599660fb80dae464 AS builder
 
-RUN apk add --no-cache curl
+WORKDIR /src
 
-COPY sample /app
+# Copy manifests first so the dependency layer is cached independently of source
+# changes.
+COPY sample/go.mod sample/go.sum ./
+RUN go mod download
 
-WORKDIR /app
+COPY sample/ ./
 
-RUN go build .
+# CGO_ENABLED=0 yields a static binary, which is what lets the runtime stage be a
+# bare image with no libc. -trimpath keeps build-host paths out of the binary, and
+# -w -s drop DWARF and the symbol table.
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags="-w -s" \
+    -o /out/hot_storage .
 
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-RUN chown -R appuser:appgroup /app
+# ---------------------------------------------------------------------------
 
-EXPOSE 3000
+FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+
+# ca-certificates is needed to verify TLS when fetching the JWKS; curl serves the
+# container healthcheck. Nothing else from the build stage reaches this image --
+# no compiler, no module cache, no source.
+RUN apk add --no-cache ca-certificates curl \
+    && addgroup -S appgroup \
+    && adduser -S appuser -G appgroup
+
+COPY --from=builder /out/hot_storage /usr/local/bin/hot_storage
 
 USER appuser
-CMD ["./sample"]
+
+# Matches the service's default listen port; override with PORT.
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/hot_storage"]

@@ -37,13 +37,26 @@ func getOrCreateKeyfunc(jwkURL string) (keyfunc.Keyfunc, error) {
 	return k, nil
 }
 
-func validate(token, jwkURL string) (string, error) {
+// validate verifies the token's signature against the key set at jwkURL and
+// enforces the registered claims. expectedIss and expectedAud must be non-empty:
+// without them a token signed by the key set is accepted no matter who issued it
+// or which client it was minted for.
+func validate(token, jwkURL, expectedIss, expectedAud string) (string, error) {
+	if expectedIss == "" || expectedAud == "" {
+		return "", errors.New("issuer/audience not configured for this auth provider")
+	}
+
 	k, err := getOrCreateKeyfunc(jwkURL)
 	if err != nil {
 		return "", err
 	}
 
-	parsed, err := jwt.Parse(token, k.Keyfunc, jwt.WithValidMethods([]string{"EdDSA", "RS256", "ES256"}))
+	parsed, err := jwt.Parse(token, k.Keyfunc,
+		jwt.WithValidMethods([]string{"EdDSA", "RS256", "ES256"}),
+		jwt.WithIssuer(expectedIss),
+		jwt.WithAudience(expectedAud),
+		jwt.WithExpirationRequired(),
+	)
 	if err != nil {
 		return "", errors.New("invalid token")
 	}

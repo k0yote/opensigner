@@ -1,11 +1,16 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "pnpm build",
-  "outputDirectory": "dist",
+  "buildCommand": "pnpm docs:build",
+  "outputDirectory": "docs/dist",
   "redirects": [
     {
-      "source": "/docs/security",
-      "destination": "/docs/security/overview",
+      "source": "/security",
+      "destination": "/security/overview",
+      "permanent": true
+    },
+    {
+      "source": "/docs/:path*",
+      "destination": "/:path*",
       "permanent": true
     },
     {

@@ -3,9 +3,15 @@ info:
   title: Openfort Hot Storage API
   version: 1.0.0
 
+tags:
+  - name: Devices
+    description: Register, recover, and inspect devices holding a key share.
+  - name: Accounts
+    description: Accounts linking a user to a signer, plus share import and migration metadata.
 paths:
   /v2/accounts:
     get:
+      tags: [Accounts]
       operationId: getAccountsV2
       summary: List accounts of a user.
       description: |
@@ -86,9 +92,12 @@ paths:
                 $ref: '#/components/schemas/AccountListV2Response'
         '401':
           description: Error response.
+        '429':
+          description: Too Many Requests - per-user rate limit exceeded. Retry after the interval in the Retry-After header.
 
   /v2/devices/recover:
     post:
+      tags: [Devices]
       summary: Recover an embedded device
       description: Recovers an embedded device for an existing account. This endpoint retrieves the device information including the share and signer details for a previously registered account.
       operationId: recoverDevice
@@ -114,9 +123,14 @@ paths:
                 $ref: '#/components/schemas/RecoverV2Response'
         '401':
           description: Error response - Unauthorized
+        '415':
+          description: Unsupported Media Type - a request with a body must use Content-Type application/json.
+        '429':
+          description: Too Many Requests - per-user rate limit exceeded. Retry after the interval in the Retry-After header.
 
   /v2/devices/register:
     post:
+      tags: [Devices]
       summary: Register an embedded device
       description: Registers a new device for an existing account by associating a share with the account. This is used when adding a new device to an account that already exists.
       operationId: registerDevice
@@ -147,9 +161,14 @@ paths:
                 $ref: '#/components/schemas/EmbeddedV2Response'
         '401':
           description: Error response - Unauthorized
+        '415':
+          description: Unsupported Media Type - a request with a body must use Content-Type application/json.
+        '429':
+          description: Too Many Requests - per-user rate limit exceeded. Retry after the interval in the Retry-After header.
 
   /v2/devices/create:
     post:
+      tags: [Devices]
       summary: Create a new embedded device
       description: Creates a new account and registers the first device for it. This endpoint handles the complete setup of a new account with an embedded signer.
       operationId: createDevice
@@ -201,9 +220,14 @@ paths:
                 $ref: '#/components/schemas/EmbeddedV2Response'
         '401':
           description: Error response - Unauthorized
+        '415':
+          description: Unsupported Media Type - a request with a body must use Content-Type application/json.
+        '429':
+          description: Too Many Requests - per-user rate limit exceeded. Retry after the interval in the Retry-After header.
 
   /v2/accounts/signer:
     get:
+      tags: [Accounts]
       operationId: getSignerV2
       summary: Get the signer for an account
       description: Returns the signer ID associated with an account at the given address for the authenticated user.
@@ -226,9 +250,12 @@ paths:
           description: Account not found or missing address parameter.
         '401':
           description: Error response - Unauthorized
+        '429':
+          description: Too Many Requests - per-user rate limit exceeded. Retry after the interval in the Retry-After header.
 
   /v2/accounts/import-share:
     post:
+      tags: [Accounts]
       operationId: importShare
       summary: Import a key share from an external source
       description: Imports a key share during migration from another system. Creates a new account, signer, and device, and records migration metadata. Returns 409 Conflict if an account already exists at the given address.
@@ -306,11 +333,16 @@ paths:
           description: Missing required fields.
         '401':
           description: Error response - Unauthorized
+        '415':
+          description: Unsupported Media Type - a request with a body must use Content-Type application/json.
+        '429':
+          description: Too Many Requests - per-user rate limit exceeded. Retry after the interval in the Retry-After header.
         '409':
           description: An account already exists at the given address.
 
   /v2/accounts/migrated-data:
     get:
+      tags: [Accounts]
       operationId: getMigratedAccountData
       summary: Get migration metadata for an account
       description: Returns migration metadata for an account that was imported from an external system. The authenticated user must own the account.
@@ -333,11 +365,14 @@ paths:
           description: Missing accountId parameter.
         '401':
           description: Error response - Unauthorized
+        '429':
+          description: Too Many Requests - per-user rate limit exceeded. Retry after the interval in the Retry-After header.
         '404':
           description: Account or migration data not found.
 
   /v1/devices/init:
     post:
+      tags: [Devices]
       operationId: initDevice
       summary: Initialize device registration or recovery
       description: |
@@ -366,9 +401,14 @@ paths:
                 $ref: '#/components/schemas/NextActionResponse'
         '401':
           description: Error response - Unauthorized
+        '415':
+          description: Unsupported Media Type - a request with a body must use Content-Type application/json.
+        '429':
+          description: Too Many Requests - per-user rate limit exceeded. Retry after the interval in the Retry-After header.
 
   /v1/devices/register:
     post:
+      tags: [Devices]
       operationId: registerDeviceV1
       summary: Register a device (v1)
       description: Registers a new device for a user. If no account exists for the user on the given chain and address, a new account is created and the device is marked as primary. Otherwise, the device is added as a secondary device.
@@ -408,9 +448,14 @@ paths:
                 $ref: '#/components/schemas/EmbeddedV1Response'
         '401':
           description: Error response - Unauthorized
+        '415':
+          description: Unsupported Media Type - a request with a body must use Content-Type application/json.
+        '429':
+          description: Too Many Requests - per-user rate limit exceeded. Retry after the interval in the Retry-After header.
 
   /v1/devices/{deviceId}:
     get:
+      tags: [Devices]
       operationId: getDevice
       summary: Get a device by ID
       description: |
@@ -433,11 +478,14 @@ paths:
                 $ref: '#/components/schemas/DeviceResponse'
         '401':
           description: Error response - Unauthorized
+        '429':
+          description: Too Many Requests - per-user rate limit exceeded. Retry after the interval in the Retry-After header.
         '404':
           description: Device not found.
 
   /v1/devices:
     get:
+      tags: [Devices]
       operationId: listDevices
       summary: List devices for the authenticated user
       description: Returns a paginated list of devices belonging to the authenticated user across all their accounts.
@@ -460,7 +508,10 @@ paths:
                 $ref: '#/components/schemas/DeviceListResponse'
         '401':
           description: Error response - Unauthorized
+        '429':
+          description: Too Many Requests - per-user rate limit exceeded. Retry after the interval in the Retry-After header.
     post:
+      tags: [Devices]
       operationId: createDevice
       summary: Create a device for an existing account
       description: Creates a new device and associates it with an existing account. The share is encrypted and stored.
@@ -504,6 +555,10 @@ paths:
           description: Account not found.
         '401':
           description: Error response - Unauthorized
+        '415':
+          description: Unsupported Media Type - a request with a body must use Content-Type application/json.
+        '429':
+          description: Too Many Requests - per-user rate limit exceeded. Retry after the interval in the Retry-After header.
 
 components:
   schemas:

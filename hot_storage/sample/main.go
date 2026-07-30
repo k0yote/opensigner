@@ -1,15 +1,24 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
 	"log/slog"
 )
 
+// migrateShares is set by -migrate-shares. It re-wraps stored shares so each is
+// bound to its device row, then exits without serving traffic.
+var migrateShares bool
+
 func main() {
-	if authServerURL == "" {
-		fmt.Println("AUTH_SERVER_URL environment variable is not set")
+	flag.BoolVar(&migrateShares, "migrate-shares", false,
+		"re-wrap stored shares so each is bound to its device row, then exit")
+	flag.Parse()
+
+	if err := validateConfig(); err != nil {
+		fmt.Printf("invalid configuration: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -25,6 +34,17 @@ func main() {
 	}
 
 	slog.Info("DB initialized")
+
+	// Operator-invoked rather than automatic: it rewrites every device row, and
+	// the result is only readable by a binary that understands the bound format.
+	if migrateShares {
+		if err := migrateSharesToBound(); err != nil {
+			slog.Error(fmt.Sprintf("share migration failed: %v", err))
+			os.Exit(1)
+		}
+		return
+	}
+
 	host := os.Getenv("HOST")
 	port := os.Getenv("PORT")
 	if port == "" {

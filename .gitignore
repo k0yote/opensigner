@@ -138,3 +138,5 @@ vite.config.ts.timestamp-*
 iframe/iframe
 
 CLAUDE.md
+# Compiled Go sample binary
+hot_storage/sample/sample

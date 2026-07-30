@@ -18,7 +18,8 @@ const (
 	authProviderGoogle  = "google"
 	authProviderPlayFab = "playfab"
 
-	authProviderGoogleUrl = "https://www.googleapis.com/oauth2/v3/certs"
+	authProviderGoogleUrl    = "https://www.googleapis.com/oauth2/v3/certs"
+	authProviderGoogleIssuer = "https://accounts.google.com"
 )
 
 var (
@@ -58,7 +59,13 @@ func validateAuth(r *http.Request) (string, string, error) {
 func validateThirdPartyAuth(token string, authProvider string) (string, error) {
 	switch authProvider {
 	case authProviderGoogle:
-		return validate(token, authProviderGoogleUrl)
+		// googleAudience is this deployment's OAuth client ID. Without it any
+		// Google-signed ID token -- including one minted for an unrelated
+		// application -- would authenticate as whatever subject it carries.
+		if googleAudience == "" {
+			return "", errors.New("google auth provider is not configured")
+		}
+		return validate(token, authProviderGoogleUrl, authProviderGoogleIssuer, googleAudience)
 	case authProviderPlayFab:
 		return "", errors.New("playfab third party authentication is unimplemented")
 	default:
@@ -68,7 +75,7 @@ func validateThirdPartyAuth(token string, authProvider string) (string, error) {
 
 func validateDefaultAuth(token string) (string, error) {
 	jwkUrl := fmt.Sprintf("%s/.well-known/jwks.json", authServerURL)
-	userId, err := validate(token, jwkUrl)
+	userId, err := validate(token, jwkUrl, expectedIssuer, expectedAudience)
 	if err != nil {
 		slog.Info(fmt.Sprintf("failed to authenticate user: '%v'", err))
 		return "", err
@@ -111,8 +118,16 @@ func getToken(r *http.Request) (string, error) {
 }
 
 func getTokenFromHeader(r *http.Request) (string, error) {
-	token := r.Header.Get(headerAuth)
-	token = strings.TrimPrefix(token, headerAuthPrefix)
+	raw := r.Header.Get(headerAuth)
+	if raw == "" {
+		return "", ErrMissingToken
+	}
+	// The scheme is required, not optional: a header that omits it is malformed
+	// and must be rejected rather than treated as a bare token.
+	if !strings.HasPrefix(raw, headerAuthPrefix) {
+		return "", ErrInvalidToken
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(raw, headerAuthPrefix))
 	if token == "" {
 		return "", ErrMissingToken
 	}

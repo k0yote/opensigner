@@ -73,10 +73,23 @@ git clone https://github.com/openfort-xyz/opensigner.git
 cd opensigner
 ```
 
+Configure the required secrets. Compose has no defaults for these and refuses to
+start without them, so a deployment cannot silently come up on credentials that are
+published in this repository:
+
+```bash
+cp .env.example .env
+# then fill in every REQUIRED value; each has a generator command in the comments
+```
+
+> **Set the database passwords before the first start.** PostgreSQL and MySQL fix
+> their passwords when the data volume is first created, so changing them later
+> does not update an existing volume.
+
 Build the project:
 
 ```bash
-make clean build
+make build
 ```
 
 Run the full stack locally:
@@ -84,6 +97,10 @@ Run the full stack locally:
 ```bash
 make run
 ```
+
+> `make clean` is **destructive**: it runs `docker compose down --rmi all -v`, and
+> the `-v` deletes the volumes, wiping both databases. To stop the stack while
+> keeping your data, use `docker compose down`.
 
 Services exposed by default:
 

@@ -35,12 +35,66 @@ Service-specific defaults are in files such as `auth_service/.env.example`.
 
 ## Required Environment Variables
 
-Two variables have no defaults and **must** be set before running `make run`:
+These variables have **no defaults**. Docker Compose refuses to start without
+them, which is deliberate: a credential that falls back to a default is a
+credential every reader of this repository already knows. Copy `.env.example` to
+`.env` and fill in each one.
 
 | Variable | Used by | Description |
 |---|---|---|
-| `JWT_SECRET` | Auth service | Secret used to sign and verify JWTs. Use a long, random string. |
-| `SHARE_ENCRYPTION_KEY` | Hot storage | AES-256 key for encrypting shares at rest. Must be exactly 64 hex characters (32 bytes). Generate with `openssl rand -hex 32`. |
+| `JWT_SECRET` | Auth service | Application secret for the auth service. Signs session cookies and encrypts the JWKS signing key at rest. Minimum 32 characters; generate with `openssl rand -base64 48`. The service refuses to start if this is unset or left at a library default. |
+| `SHARE_ENCRYPTION_KEY` | Hot storage | AES-256 key for encrypting shares at rest. Exactly 64 hex characters (32 bytes). Generate with `openssl rand -hex 32`. |
+| `POSTGRES_PASSWORD` | PostgreSQL | Superuser password. |
+| `MYSQL_ROOT_PASSWORD` | MySQL | Root password. |
+| `MYSQL_PASSWORD` | MySQL | Application user password. |
+| `AUTH_SERVICE_DB_PASS` | Auth service | Postgres password the auth service connects with — usually the same value as `POSTGRES_PASSWORD`. |
+| `HOT_STORAGE_DB_PASS` | Hot storage | Postgres password hot storage connects with — usually the same value as `POSTGRES_PASSWORD`. |
+| `COLD_STORAGE_DB_PASS` | Cold storage | MySQL password cold storage connects with — usually the same value as `MYSQL_PASSWORD`. |
+
+:::warning[Set the database passwords before the first start]
+PostgreSQL and MySQL fix their passwords when the data volume is first
+initialised. Changing these values later does not update an existing volume: you
+would need `ALTER USER` against the running database, or a fresh volume. Decide
+them before the first `make run`.
+:::
+
+### Rotating `JWT_SECRET`
+
+`JWT_SECRET` does more than sign tokens: the auth service uses it to **encrypt the
+JWKS private signing key stored in the `jwks` table**. Changing the secret without
+accounting for that key leaves the deployment in a broken or unsafe state, so
+rotation is a two-step operation.
+
+:::warning[Changing `JWT_SECRET` requires purging the `jwks` table]
+The stored signing key is encrypted with the previous secret. After changing
+`JWT_SECRET`:
+
+```sql
+DELETE FROM jwks;
+```
+
+The auth service regenerates a signing key under the new secret on the next
+request. Skip this and `GET /api/auth/token` fails with
+`Failed to decrypt private key`, because the key on disk cannot be read with the
+new secret.
+
+Then invalidate issued credentials, since tokens signed by the old key are no
+longer verifiable and sessions predate the rotation:
+
+```sql
+DELETE FROM session;
+```
+:::
+
+**Treat the old signing key as exposed.** Anything that could read the previous
+secret — a configuration file, an environment dump, a database backup, a snapshot,
+or a log — could also decrypt the signing key it protected. A key is only as
+private as every copy of the secret that encrypted it, so rotate on any suspicion
+that a secret was disclosed, and do not reuse a `jwks` row across secrets.
+
+Because `hot_storage` releases a wallet key share to any holder of a validly
+signed JWT, a signing key that can be recovered is equivalent to being able to
+authenticate as any user.
 
 ## Optional Environment Variables
 
@@ -51,10 +105,21 @@ These variables have sensible defaults for local development but should be confi
 | `ALLOWED_ORIGINS` | `http://localhost:7050,http://localhost:7051` | Comma-separated list of allowed CORS origins. Used by both the auth service and hot storage. |
 | `BETTER_AUTH_BASE_URL` | `http://localhost:7052` | Public base URL of the auth service. |
 | `POSTGRES_USER` | `postgres` | PostgreSQL superuser name. |
-| `POSTGRES_PASSWORD` | `postgres_password` | PostgreSQL superuser password. |
+| `TRUST_PROXY` | `false` | Set to `true` only when the auth service sits behind a proxy that sets `x-forwarded-for`. Rate limiting is keyed on the client address, so trusting that header from an untrusted source lets a caller send a fresh value per request and sidestep the limit entirely. |
+| `GOOGLE_JWT_AUDIENCE` | unset | OAuth client ID accepted for `x-auth-provider: google`. While unset, hot storage rejects Google tokens rather than accepting any Google-signed token regardless of the client it was issued to. |
+| `AUTH_JWT_ISSUER` / `AUTH_JWT_AUDIENCE` | value of `BETTER_AUTH_BASE_URL` | Expected `iss` and `aud` claims that hot storage enforces on incoming JWTs. These are the auth service's **externally visible** base URL, which is why they cannot be derived from `AUTH_SERVER_URL` — that is the internal address used to fetch the JWKS. |
+| `ALLOW_INSECURE_AUTH_SERVER` | `false` | Permits fetching the JWKS over plaintext HTTP. Hot storage otherwise requires `https` for `AUTH_SERVER_URL`, because anyone able to rewrite that channel can substitute the key set and mint tokens for any user. Local development only. |
 
-Each service also accepts database connection variables (`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASS`, `DB_SSLMODE`)
+Each service also accepts database connection variables (`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_SSLMODE`)
 with defaults suitable for the Docker Compose setup. See `docker-compose.yml` for the full list.
+
+:::warning[`make run` disables database TLS]
+`make run` applies `docker-compose.dev.yml`, which overrides `DB_SSLMODE` to
+`disable`. The stock PostgreSQL image is built without TLS, so the `require`
+default cannot connect. **A local run therefore talks to the database in
+plaintext.** Production must not apply that overlay, and needs a database with TLS
+enabled to honour `DB_SSLMODE=require`.
+:::
 
 Once you have everything running, head over to the [Getting Started](/introduction/getting-started) guide.
 

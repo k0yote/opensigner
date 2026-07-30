@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -27,12 +28,19 @@ const (
 	errConflict = "resource already exists"
 )
 
-// contentTypeMiddleware validates that POST/PUT/PATCH requests have a JSON Content-Type.
+// contentTypeMiddleware requires a parsed JSON media type on any request with a
+// body.
+//
+// The media type is parsed, not substring-matched: a substring test also accepts
+// values such as "text/plain; x=application/json". Both "text/plain" and an
+// absent Content-Type are CORS-safelisted, so a browser sends them cross-origin
+// with no preflight. Requiring exactly application/json keeps every
+// state-changing request behind a preflight.
 func contentTypeMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
-			ct := r.Header.Get(contentTypeHeader)
-			if ct != "" && !strings.Contains(ct, "application/json") {
+			mediaType, _, err := mime.ParseMediaType(r.Header.Get(contentTypeHeader))
+			if err != nil || mediaType != contentTypeJSON {
 				http.Error(w, "unsupported content type", http.StatusUnsupportedMediaType)
 				return
 			}
@@ -56,7 +64,9 @@ func listenAndServe(addr string) {
 	mux.HandleFunc("/v2/accounts/import-share", handleImportShare)
 	mux.HandleFunc("/v2/accounts/migrated-data", handleGetMigratedAccountData)
 
-	handler := contentTypeMiddleware(authMiddleware(mux))
+	// Order matters: the rate limiter keys on the authenticated user id, so it
+	// sits inside authMiddleware.
+	handler := contentTypeMiddleware(authMiddleware(rateLimitMiddleware(newRateLimiter(), mux)))
 	handler = corsMiddleware(handler)
 
 	// Health endpoint outside auth middleware
@@ -100,14 +110,16 @@ func handleRegisterDeviceV2(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	encryptedShare, err := encryptShare(req.Share)
+	// The id is generated first because the share is bound to it.
+	deviceID := uuid.NewString()
+	encryptedShare, err := encryptShare(req.Share, deviceID)
 	if err != nil {
 		http.Error(w, "failed to encrypt share", http.StatusInternalServerError)
 		return
 	}
 
 	device := Device{
-		ID:        uuid.NewString(),
+		ID:        deviceID,
 		Share:     encryptedShare,
 		IsPrimary: false, // with this endpoint we save only "secondary" shares
 		SignerId:  account.SignerId,
@@ -174,7 +186,7 @@ func handleRecoverDeviceV2(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	decryptedShare, err := decryptShare(device.Share)
+	decryptedShare, err := decryptShare(device.Share, device.ID)
 	if err != nil {
 		http.Error(w, "failed to decrypt share", http.StatusInternalServerError)
 		return
@@ -322,13 +334,14 @@ func handleCreateDeviceV2(w http.ResponseWriter, r *http.Request) {
 			return fmt.Errorf("failed to create a signer")
 		}
 
-		encryptedShare, err := encryptShare(req.Share)
+		deviceID := uuid.NewString()
+		encryptedShare, err := encryptShare(req.Share, deviceID)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt share")
 		}
 
 		device := Device{
-			ID:        uuid.NewString(),
+			ID:        deviceID,
 			Share:     encryptedShare,
 			IsPrimary: true,
 			SignerId:  signer.ID,
@@ -419,7 +432,7 @@ func handleInitDevice(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		decryptedShare, err := decryptShare(device.Share)
+		decryptedShare, err := decryptShare(device.Share, device.ID)
 		if err != nil {
 			http.Error(w, "failed to decrypt share", http.StatusInternalServerError)
 			return
@@ -468,13 +481,14 @@ func handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if !isPrimary {
-			encryptedShare, err := encryptShare(req.Share)
+			deviceID := uuid.NewString()
+			encryptedShare, err := encryptShare(req.Share, deviceID)
 			if err != nil {
 				return fmt.Errorf("failed to encrypt share")
 			}
 
 			device := Device{
-				ID:        uuid.NewString(),
+				ID:        deviceID,
 				Share:     encryptedShare,
 				IsPrimary: false,
 				SignerId:  account.SignerId,
@@ -503,13 +517,14 @@ func handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 				return fmt.Errorf("failed to save signer")
 			}
 
-			encryptedShare, err := encryptShare(req.Share)
+			deviceID := uuid.NewString()
+			encryptedShare, err := encryptShare(req.Share, deviceID)
 			if err != nil {
 				return fmt.Errorf("failed to encrypt share")
 			}
 
 			device := Device{
-				ID:        uuid.NewString(),
+				ID:        deviceID,
 				Share:     encryptedShare,
 				IsPrimary: true,
 				SignerId:  signer.ID,
@@ -578,7 +593,7 @@ func handleGetDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decryptedShare, err := decryptShare(device.Share)
+	decryptedShare, err := decryptShare(device.Share, device.ID)
 	if err != nil {
 		http.Error(w, "failed to decrypt share", http.StatusInternalServerError)
 		return
@@ -617,7 +632,7 @@ func handleGetPrimaryDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decryptedShare, err := decryptShare(device.Share)
+	decryptedShare, err := decryptShare(device.Share, device.ID)
 	if err != nil {
 		http.Error(w, "failed to decrypt share", http.StatusInternalServerError)
 		return
@@ -731,11 +746,24 @@ func handleImportShare(w http.ResponseWriter, r *http.Request) {
 	userId := r.Context().Value(fieldUserId).(string)
 	authProvider := r.Context().Value(fieldAuthProvider).(string)
 
+	// Resolve the address that will be persisted before checking uniqueness, so
+	// both operate on the same value. For a smart account the stored address is
+	// ownerAddress rather than the request's address; checking one and storing the
+	// other would let a caller claim an address another account already holds.
+	accAddress := req.Address
+	if req.SmartAccount != nil {
+		if req.OwnerAddress == nil {
+			http.Error(w, "ownerAddress is required for smart accounts", http.StatusBadRequest)
+			return
+		}
+		accAddress = *req.OwnerAddress
+	}
+
 	var resp ImportShareResponse
 	txErr := db.Transaction(func(tx *gorm.DB) error {
-		// Check if account already exists at this address
+		// Uniqueness is enforced on the address as stored, matching accAddress above.
 		var existing Account
-		if err := tx.First(&existing, "address = ?", req.Address).Error; err == nil {
+		if err := tx.First(&existing, "address = ?", accAddress).Error; err == nil {
 			return fmt.Errorf("conflict")
 		}
 
@@ -749,13 +777,14 @@ func handleImportShare(w http.ResponseWriter, r *http.Request) {
 			return fmt.Errorf("failed to create signer")
 		}
 
-		encryptedShare, err := encryptShare(req.Share)
+		deviceID := uuid.NewString()
+		encryptedShare, err := encryptShare(req.Share, deviceID)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt share")
 		}
 
 		device := Device{
-			ID:        uuid.NewString(),
+			ID:        deviceID,
 			Share:     encryptedShare,
 			IsPrimary: true,
 			SignerId:  signer.ID,
@@ -767,17 +796,6 @@ func handleImportShare(w http.ResponseWriter, r *http.Request) {
 		accountId := req.ID
 		if accountId == "" {
 			accountId = uuid.NewString()
-		}
-
-		var accAddress string
-
-		if req.SmartAccount != nil {
-			if req.OwnerAddress == nil {
-				return fmt.Errorf("ownerAddress is required for smart accounts")
-			}
-			accAddress = *req.OwnerAddress // Because we have to always save EOA address
-		} else {
-			accAddress = req.Address
 		}
 
 		newAccount := Account{
@@ -883,14 +901,15 @@ func handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	encryptedShare, err := encryptShare(req.Share)
+	deviceID := uuid.NewString()
+	encryptedShare, err := encryptShare(req.Share, deviceID)
 	if err != nil {
 		http.Error(w, "failed to encrypt share", http.StatusInternalServerError)
 		return
 	}
 
 	device := Device{
-		ID:        uuid.NewString(),
+		ID:        deviceID,
 		Share:     encryptedShare,
 		IsPrimary: false,
 		SignerId:  account.SignerId,

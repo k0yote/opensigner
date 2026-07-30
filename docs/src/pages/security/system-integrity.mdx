@@ -11,10 +11,22 @@ This page covers how to verify that OpenSigner components are authentic and have
 
 ## Attestation
 
-Openfort's public images are attested through [Cosign](https://github.com/sigstore/cosign).
+Openfort's published images are attested through [Cosign](https://github.com/sigstore/cosign).
 GitHub generates a unique key for each workflow run, and signs the images built by the workflow.
 Openfort has no access to these keys, ensuring the signed builds have not been tampered with
 or created with any method other than the automated release workflows.
+
+:::warning[Which images are attested]
+Attestation covers the images Openfort **publishes** from their own release
+workflows — `shield` (cold storage) and `iframe`.
+
+`auth_service` and `hot_storage` are **not** published as attested images. They
+are reference implementations that you build yourself from this repository, so
+there is no upstream signature to verify: their provenance is your own build
+pipeline. If you deploy them, sign your images in your own CI and verify those
+signatures at deploy time. Verifying an Openfort signature is not a check you can
+perform on a component you compiled.
+:::
 
 ### Verify images
 

@@ -1,0 +1,213 @@
+name: Verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege by default; jobs opt in to more only if they need it.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: Node (auth_service, docs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
+        with:
+          version: 10.28.2
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+
+      - name: Install auth_service dependencies
+        working-directory: auth_service
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck auth_service
+        working-directory: auth_service
+        run: pnpm exec tsc --noEmit
+
+      - name: Build auth_service
+        working-directory: auth_service
+        run: pnpm build
+
+      - name: Lint and format check auth_service
+        working-directory: auth_service
+        run: pnpm exec biome check .
+
+      # --prod scopes this to what actually ships. The migration CLI is a
+      # devDependency confined to its own build stage and never reaches the
+      # runtime image, so its advisories would otherwise fail this job for code
+      # that is not deployed.
+      - name: Audit auth_service runtime dependencies
+        working-directory: auth_service
+        run: pnpm audit --prod --audit-level=low
+
+      - name: Audit auth_service dev dependencies (non-blocking)
+        working-directory: auth_service
+        continue-on-error: true
+        run: pnpm audit --audit-level=high
+
+      - name: Install docs dependencies
+        working-directory: docs
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck docs
+        working-directory: docs
+        run: pnpm run check:types
+
+      # Builds the docs so the SEO and page-weight guardrails run against real
+      # output. d2 is needed for the diagram step.
+      - name: Install d2
+        run: |
+          curl -fsSL https://github.com/terrastruct/d2/releases/download/v0.7.1/d2-v0.7.1-linux-amd64.tar.gz -o d2.tar.gz
+          echo "eb172adf59f38d1e5a70ab177591356754ffaf9bebb84e0ca8b767dfb421dad7  d2.tar.gz" | sha256sum -c -
+          tar -xzf d2.tar.gz && sudo make -C d2-v0.7.1 install
+
+      - name: Build docs (includes sitemap and page-weight checks)
+        working-directory: docs
+        run: pnpm run build
+
+      - name: Audit docs dependencies
+        working-directory: docs
+        continue-on-error: true
+        run: pnpm audit --audit-level=high
+
+  go:
+    name: Go (hot_storage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: hot_storage/sample/go.mod
+          cache-dependency-path: hot_storage/sample/go.sum
+
+      - name: Check formatting
+        working-directory: hot_storage/sample
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt found unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        working-directory: hot_storage/sample
+        run: go vet ./...
+
+      - name: Build
+        working-directory: hot_storage/sample
+        run: go build ./...
+
+      - name: Test
+        working-directory: hot_storage/sample
+        run: go test ./...
+
+      - name: Vulnerability scan
+        working-directory: hot_storage/sample
+        # govulncheck has no native allowlist, so known-unfixable findings are
+        # filtered by ID here. Each entry must state why it cannot be fixed yet,
+        # and anything not listed fails the job.
+        #
+        #   GO-2026-5856  crypto/tls Encrypted Client Hello privacy leak.
+        #                 Fixed in go1.25.12; no golang:1.25.12-alpine image is
+        #                 published yet. Remove this entry once one exists.
+        env:
+          ALLOWLIST: GO-2026-5856
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          set +e
+          output="$("$(go env GOPATH)/bin/govulncheck" ./... 2>&1)"
+          set -e
+          echo "$output"
+
+          found="$(echo "$output" | grep -oE 'GO-[0-9]{4}-[0-9]+' | sort -u || true)"
+          unexpected=""
+          for id in $found; do
+            case " $ALLOWLIST " in
+              *" $id "*) echo "::notice::$id is allowlisted" ;;
+              *) unexpected="$unexpected $id" ;;
+            esac
+          done
+
+          if [ -n "$unexpected" ]; then
+            echo "::error::unlisted vulnerabilities:$unexpected"
+            exit 1
+          fi
+          echo "No unlisted vulnerabilities."
+
+  shell:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: ShellCheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          find . -name '*.sh' -not -path './node_modules/*' -print0 \
+            | xargs -0 -r shellcheck
+
+  compose:
+    name: Compose config
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Placeholders purely so interpolation resolves. The required variables
+      # have no defaults by design, so compose refuses to start without them.
+      - name: Validate docker-compose
+        env:
+          JWT_SECRET: ci-placeholder-secret-at-least-32-characters-long
+          SHARE_ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+          POSTGRES_PASSWORD: ci-placeholder
+          MYSQL_ROOT_PASSWORD: ci-placeholder
+          MYSQL_PASSWORD: ci-placeholder
+          AUTH_SERVICE_DB_PASS: ci-placeholder
+          HOT_STORAGE_DB_PASS: ci-placeholder
+          COLD_STORAGE_DB_PASS: ci-placeholder
+        run: |
+          docker compose -f docker-compose.yml config >/dev/null
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml config >/dev/null
+
+      - name: Assert required secrets have no defaults
+        run: |
+          # Unset environment must fail: a missing credential should stop the
+          # stack rather than fall back to a weak default.
+          if docker compose -f docker-compose.yml config >/dev/null 2>&1; then
+            echo "ERROR: compose resolved with no credentials set; :? guards are missing"
+            exit 1
+          fi
+          echo "OK: compose refuses to resolve without required secrets"
