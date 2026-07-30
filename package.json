@@ -2,7 +2,7 @@
   "private": true,
   "license": "MIT",
   "engines": {
-    "node": ">=22.5"
+    "node": ">=24"
   },
   "scripts": {
     "docs:build": "pnpm -C docs run build",
