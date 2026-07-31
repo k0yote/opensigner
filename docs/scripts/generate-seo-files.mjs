@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import NodeFS from 'node:fs'
 import NodePath from 'node:path'
 import Process from 'node:process'
+import { SITE_URL, collectRoutes, findDistRoot, isIndexableRoute } from './dist.mjs'
 
 // Emits sitemap.xml and robots.txt into the built output.
 //
@@ -15,32 +16,7 @@ import Process from 'node:process'
 // <base> tag that resolves every relative asset against the production domain,
 // which breaks hydration on local and preview origins. Writing the two files here
 // keeps absolute SEO URLs without that tag.
-const SITE_URL = 'https://www.opensigner.dev'
-
-const distRoot = ['dist/public', 'dist']
-  .map((d) => NodePath.join(Process.cwd(), d))
-  .find((d) => NodeFS.existsSync(NodePath.join(d, 'index.html')))
-
-if (!distRoot) {
-  throw new Error('generate-seo-files: no built output found — run `vocs build` first')
-}
-
-function collectRoutes(dir, prefix = '') {
-  const routes = []
-  for (const entry of NodeFS.readdirSync(dir, { withFileTypes: true })) {
-    const full = NodePath.join(dir, entry.name)
-    if (entry.isDirectory()) {
-      // RSC payloads, hashed assets, and the internal root layout are not pages.
-      if (entry.name === 'RSC' || entry.name === 'assets' || entry.name.endsWith('.d')) continue
-      routes.push(...collectRoutes(full, `${prefix}/${entry.name}`))
-      continue
-    }
-    if (!entry.name.endsWith('.html')) continue
-    if (entry.name === 'index.html') routes.push(prefix || '/')
-    else routes.push(`${prefix}/${entry.name.replace(/\.html$/, '')}`)
-  }
-  return routes
-}
+const distRoot = findDistRoot('generate-seo-files')
 
 // lastmod tracks the last commit touching the content behind a route, not the
 // build clock. Stamping build time advertises every page as freshly changed on
@@ -86,9 +62,7 @@ function lastModified(route) {
   return undefined
 }
 
-const routes = collectRoutes(distRoot)
-  .filter((r) => !r.startsWith('/404') && !r.startsWith('/_root'))
-  .sort()
+const routes = collectRoutes(distRoot).filter(isIndexableRoute).sort()
 
 if (routes.length === 0) {
   throw new Error(`generate-seo-files: no routes found under ${distRoot}`)

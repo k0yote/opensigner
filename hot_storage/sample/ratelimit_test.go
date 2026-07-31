@@ -26,7 +26,7 @@ func okHandler() http.Handler {
 }
 
 func TestRateLimitAllowsBurstThenThrottles(t *testing.T) {
-	h := rateLimitMiddleware(&rateLimiter{visitors: map[string]*visitor{}}, okHandler())
+	h := rateLimitMiddleware(newRateLimiter(), okHandler())
 
 	for i := 0; i < rateLimitBurst; i++ {
 		if code := serveAs(t, h, "user-a"); code != http.StatusOK {
@@ -42,7 +42,7 @@ func TestRateLimitAllowsBurstThenThrottles(t *testing.T) {
 }
 
 func TestRateLimitIsPerUser(t *testing.T) {
-	h := rateLimitMiddleware(&rateLimiter{visitors: map[string]*visitor{}}, okHandler())
+	h := rateLimitMiddleware(newRateLimiter(), okHandler())
 
 	for i := 0; i < rateLimitBurst+5; i++ {
 		serveAs(t, h, "noisy-user")
@@ -55,7 +55,7 @@ func TestRateLimitIsPerUser(t *testing.T) {
 }
 
 func TestRateLimitRequiresAuthenticatedSubject(t *testing.T) {
-	h := rateLimitMiddleware(&rateLimiter{visitors: map[string]*visitor{}}, okHandler())
+	h := rateLimitMiddleware(newRateLimiter(), okHandler())
 
 	// Reached without a user id in context, the limiter has no key to charge and
 	// must refuse rather than fall through unmetered.
@@ -65,25 +65,23 @@ func TestRateLimitRequiresAuthenticatedSubject(t *testing.T) {
 }
 
 func TestRateLimitEvictsIdleVisitors(t *testing.T) {
-	rl := &rateLimiter{visitors: map[string]*visitor{}}
+	rl := newRateLimiter()
 	rl.allow("stale-user")
+	rl.allow("active-user")
 
 	rl.mu.Lock()
 	rl.visitors["stale-user"].lastSeen = time.Now().Add(-2 * rateLimitVisitorTTL)
 	rl.mu.Unlock()
 
-	// Mirrors one sweep pass; the loop in sweep() is driven by a ticker.
-	cutoff := time.Now().Add(-rateLimitVisitorTTL)
-	rl.mu.Lock()
-	for key, v := range rl.visitors {
-		if v.lastSeen.Before(cutoff) {
-			delete(rl.visitors, key)
-		}
-	}
-	remaining := len(rl.visitors)
-	rl.mu.Unlock()
+	// One sweep pass at the TTL cutoff, exactly as the ticker drives it.
+	rl.evictIdle(time.Now().Add(-rateLimitVisitorTTL))
 
-	if remaining != 0 {
-		t.Fatalf("idle visitor was retained; %d entries remain", remaining)
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if _, ok := rl.visitors["stale-user"]; ok {
+		t.Fatal("idle visitor was retained past its TTL")
+	}
+	if _, ok := rl.visitors["active-user"]; !ok {
+		t.Fatal("an active visitor was evicted")
 	}
 }

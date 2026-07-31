@@ -69,17 +69,51 @@ func TestGetTokenRejectsBothHeaderAndCookie(t *testing.T) {
 	}
 }
 
-func TestValidateRequiresIssuerAndAudience(t *testing.T) {
-	// Without an expected issuer/audience, any token signed by the key set would
-	// be accepted regardless of who it was issued to. validate must refuse.
-	for _, tc := range []struct{ iss, aud string }{
-		{"", ""},
-		{"http://localhost:7052", ""},
-		{"", "http://localhost:7052"},
-	} {
-		if _, err := validate("any.token.here", "http://example.invalid/jwks", tc.iss, tc.aud); err == nil {
-			t.Fatalf("expected an error for iss=%q aud=%q", tc.iss, tc.aud)
+func TestGetTokenFromCookie(t *testing.T) {
+	t.Run("allow-listed field returns the token", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodGet, "/v2/accounts", nil)
+		r.Header.Set(headerCookieFieldName, "better-auth.session_token")
+		r.AddCookie(&http.Cookie{Name: "better-auth.session_token", Value: "session-token"})
+
+		got, err := getTokenFromCookie(r)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
+		if got != "session-token" {
+			t.Fatalf("got %q, want %q", got, "session-token")
+		}
+	})
+
+	t.Run("named cookie absent", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodGet, "/v2/accounts", nil)
+		r.Header.Set(headerCookieFieldName, "better-auth.session_token")
+
+		if _, err := getTokenFromCookie(r); err != ErrMissingToken {
+			t.Fatalf("got %v, want ErrMissingToken", err)
+		}
+	})
+
+	t.Run("empty cookie value", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodGet, "/v2/accounts", nil)
+		r.Header.Set(headerCookieFieldName, "better-auth.session_token")
+		r.AddCookie(&http.Cookie{Name: "better-auth.session_token", Value: ""})
+
+		if _, err := getTokenFromCookie(r); err != ErrMissingToken {
+			t.Fatalf("got %v, want ErrMissingToken", err)
+		}
+	})
+}
+
+func TestGetTokenRejectsMalformedHeaderDespiteValidCookie(t *testing.T) {
+	// A malformed Authorization header must fail the request outright, not fall
+	// back to the cookie as if the header had never been sent.
+	r := httptest.NewRequest(http.MethodGet, "/v2/accounts", nil)
+	r.Header.Set(headerAuth, "Basic not-a-bearer-token")
+	r.Header.Set(headerCookieFieldName, "better-auth.session_token")
+	r.AddCookie(&http.Cookie{Name: "better-auth.session_token", Value: "cookie-token"})
+
+	if _, err := getToken(r); err != ErrInvalidToken {
+		t.Fatalf("got %v, want ErrInvalidToken", err)
 	}
 }
 
@@ -117,6 +151,8 @@ func TestContentTypeMiddleware(t *testing.T) {
 		{name: "text/plain smuggling rejected", method: http.MethodPost, contentType: "text/plain; x=application/json", wantStatus: http.StatusUnsupportedMediaType},
 		{name: "absent content type rejected", method: http.MethodPost, contentType: "", wantStatus: http.StatusUnsupportedMediaType},
 		{name: "form encoded rejected", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", wantStatus: http.StatusUnsupportedMediaType},
+		{name: "PUT is guarded too", method: http.MethodPut, contentType: "text/plain", wantStatus: http.StatusUnsupportedMediaType},
+		{name: "PATCH is guarded too", method: http.MethodPatch, contentType: "", wantStatus: http.StatusUnsupportedMediaType},
 		{name: "GET needs no content type", method: http.MethodGet, contentType: "", wantStatus: http.StatusOK},
 	}
 

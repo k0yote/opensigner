@@ -26,6 +26,10 @@ RUN pnpm build
 # config file, so it lives here rather than in the image that serves traffic:
 # its dependency tree is large and carries advisories of its own, none of which
 # belong in a process handling requests.
+#
+# @better-auth/cli is pinned at 1.4.21 (the latest stable) while the app runs
+# better-auth 1.6.25; the CLI bundles its own core, whose table schema matches
+# 1.6.25's. Re-verify that match whenever better-auth is bumped.
 FROM builder AS migrate
 
 ENV NODE_ENV=production

@@ -43,6 +43,10 @@ jobs:
         working-directory: auth_service
         run: pnpm exec tsc --noEmit
 
+      - name: Test auth_service
+        working-directory: auth_service
+        run: pnpm test
+
       - name: Build auth_service
         working-directory: auth_service
         run: pnpm build
@@ -68,23 +72,22 @@ jobs:
         working-directory: docs
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck docs
-        working-directory: docs
-        run: pnpm run check:types
-
-      # Builds the docs so the SEO and page-weight guardrails run against real
-      # output. d2 is needed for the diagram step.
+      # The docs build typechecks first and then runs the SEO and page-weight
+      # guardrails against real output. d2 is needed for the diagram step; the
+      # install script owns the pinned version and checksums.
       - name: Install d2
         run: |
-          curl -fsSL https://github.com/terrastruct/d2/releases/download/v0.7.1/d2-v0.7.1-linux-amd64.tar.gz -o d2.tar.gz
-          echo "eb172adf59f38d1e5a70ab177591356754ffaf9bebb84e0ca8b767dfb421dad7  d2.tar.gz" | sha256sum -c -
-          tar -xzf d2.tar.gz && sudo make -C d2-v0.7.1 install
+          ./docs/scripts/install-d2.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Build docs (includes sitemap and page-weight checks)
+      - name: Build docs (includes typecheck, sitemap and page-weight checks)
         working-directory: docs
         run: pnpm run build
 
-      - name: Audit docs dependencies
+      # Non-blocking: docs dependencies never reach a runtime -- the site is
+      # prerendered and served by nginx -- so advisories are surfaced here but
+      # do not gate merges.
+      - name: Audit docs dependencies (non-blocking)
         working-directory: docs
         continue-on-error: true
         run: pnpm audit --audit-level=high
@@ -125,7 +128,7 @@ jobs:
 
       - name: Test
         working-directory: hot_storage/sample
-        run: go test ./...
+        run: go test -race ./...
 
       - name: Vulnerability scan
         working-directory: hot_storage/sample
@@ -139,13 +142,22 @@ jobs:
         env:
           ALLOWLIST: GO-2026-5856
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          set +e
-          output="$("$(go env GOPATH)/bin/govulncheck" ./... 2>&1)"
-          set -e
-          echo "$output"
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
-          found="$(echo "$output" | grep -oE 'GO-[0-9]{4}-[0-9]+' | sort -u || true)"
+          # JSON mode exits 0 whenever the scan itself succeeds; any other exit
+          # means the scanner failed and the run proves nothing.
+          if ! "$(go env GOPATH)/bin/govulncheck" -format json ./... > govulncheck.json; then
+            echo "::error::govulncheck failed to run; treating as a failed scan"
+            exit 1
+          fi
+
+          # Only findings with a resolved call-stack frame are reachable from
+          # this module; OSV entries without one are informational.
+          found="$(jq -r 'select(.finding != null)
+                          | select(.finding.trace[0].function != null)
+                          | .finding.osv' govulncheck.json | sort -u)"
+          rm govulncheck.json
+
           unexpected=""
           for id in $found; do
             case " $ALLOWLIST " in
@@ -170,11 +182,16 @@ jobs:
         with:
           persist-credentials: false
 
+      # shellcheck is preinstalled on ubuntu-latest. The non-empty assertion
+      # keeps a future rename from silently emptying the check.
       - name: ShellCheck
         run: |
-          sudo apt-get update && sudo apt-get install -y shellcheck
-          find . -name '*.sh' -not -path './node_modules/*' -print0 \
-            | xargs -0 -r shellcheck
+          files="$(git ls-files '*.sh')"
+          if [ -z "$files" ]; then
+            echo "::error::no shell scripts matched; update this step if they moved"
+            exit 1
+          fi
+          echo "$files" | xargs shellcheck
 
   compose:
     name: Compose config
@@ -203,9 +220,19 @@ jobs:
       - name: Assert required secrets have no defaults
         run: |
           # Unset environment must fail: a missing credential should stop the
-          # stack rather than fall back to a weak default.
-          if docker compose -f docker-compose.yml config >/dev/null 2>&1; then
+          # stack rather than fall back to a weak default. The failure must be
+          # the :? guard itself, not an unrelated compose error.
+          set +e
+          output="$(docker compose -f docker-compose.yml config 2>&1 >/dev/null)"
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
             echo "ERROR: compose resolved with no credentials set; :? guards are missing"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "must be set"; then
+            echo "ERROR: compose failed, but not on a missing-credential guard:"
+            echo "$output"
             exit 1
           fi
           echo "OK: compose refuses to resolve without required secrets"

@@ -7,10 +7,10 @@ build:
 
 clean:
 	find . -name 'node_modules' -type d -prune -exec rm -rf '{}' +
-	docker-compose down --rmi 'all' -v
+	docker compose down --rmi 'all' -v
 
 run:
 	docker compose -f docker-compose.yml -f docker-compose.dev.yml up postgres auth_service iframe iframe-sample hot_storage cold_storage
 
 docs:
-	docker-compose up docs
+	docker compose up docs

@@ -1,6 +1,7 @@
 import NodeFS from 'node:fs'
 import NodePath from 'node:path'
 import Process from 'node:process'
+import { collectHtmlFiles, findDistRoot } from './dist.mjs'
 
 // Guards the weight a reader actually downloads to view a page.
 //
@@ -30,51 +31,43 @@ const BUDGETS = {
   maxHtmlKb: 350,
 }
 
-const distRoot = ['dist/public', 'dist']
-  .map((d) => NodePath.join(Process.cwd(), d))
-  .find((d) => NodeFS.existsSync(NodePath.join(d, 'index.html')))
+const distRoot = findDistRoot('check-page-weight')
 
-if (!distRoot) {
-  throw new Error('check-page-weight: no built output found — run `vocs build` first')
-}
-
-function walk(dir) {
-  const out = []
-  for (const entry of NodeFS.readdirSync(dir, { withFileTypes: true })) {
-    const full = NodePath.join(dir, entry.name)
-    if (entry.isDirectory()) out.push(...walk(full))
-    else out.push(full)
-  }
-  return out
-}
-
-const sizeOf = (relPath) => {
+// A referenced asset missing from the build is a broken page, not a zero-byte
+// one; failing here beats shipping it.
+const sizeOf = (relPath, page) => {
   try {
     return NodeFS.statSync(NodePath.join(distRoot, relPath)).size
   } catch {
-    return 0
+    throw new Error(
+      `check-page-weight: ${page} references ${relPath}, which is not in the build output`,
+    )
   }
 }
 const kb = (bytes) => Math.round(bytes / 1024)
 
-const htmlFiles = walk(distRoot)
-  .filter((f) => f.endsWith('.html'))
-  .map((f) => NodePath.relative(distRoot, f))
-  .filter((f) => !f.startsWith('404') && !f.startsWith('_root'))
+const htmlFiles = collectHtmlFiles(distRoot).filter(
+  (f) => !f.startsWith('404') && !f.startsWith('_root'),
+)
 
 const pages = []
 for (const rel of htmlFiles) {
   const html = NodeFS.readFileSync(NodePath.join(distRoot, rel), 'utf8')
   const htmlSize = Buffer.byteLength(html)
 
-  // Assets the document itself references, i.e. what a first visit fetches.
+  // Assets the document itself loads (script src / link href), i.e. what a
+  // first visit fetches. Matching on attributes rather than any occurrence of
+  // an asset-shaped string keeps prose that merely mentions an asset filename
+  // out of the measurement.
   const referenced = new Set(
-    [...html.matchAll(/(?:assets\/[A-Za-z0-9._-]+\.(?:js|css))/g)].map(([m]) => m),
+    [...html.matchAll(/(?:src|href)="\/?(assets\/[A-Za-z0-9._-]+\.(?:js|css))"/g)].map(
+      ([, m]) => m,
+    ),
   )
   let assetBytes = 0
   let largest = { path: '', size: 0 }
   for (const asset of referenced) {
-    const size = sizeOf(asset)
+    const size = sizeOf(asset, rel)
     assetBytes += size
     if (size > largest.size) largest = { path: asset, size }
   }

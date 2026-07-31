@@ -32,26 +32,30 @@ type rateLimiter struct {
 	visitors map[string]*visitor
 }
 
+// newRateLimiter builds a limiter without starting the sweep goroutine; the
+// serving path starts it explicitly so tests can drive eviction directly.
 func newRateLimiter() *rateLimiter {
-	rl := &rateLimiter{visitors: make(map[string]*visitor)}
-	go rl.sweep()
-	return rl
+	return &rateLimiter{visitors: make(map[string]*visitor)}
 }
 
-// sweep evicts idle visitors. Without it the map grows for the lifetime of the
-// process, which turns a rate limiter into a memory-exhaustion vector.
+// sweep periodically evicts idle visitors. Without it the map grows for the
+// lifetime of the process, which turns a rate limiter into a memory-exhaustion
+// vector.
 func (rl *rateLimiter) sweep() {
 	ticker := time.NewTicker(rateLimitSweepEvery)
 	defer ticker.Stop()
 	for range ticker.C {
-		cutoff := time.Now().Add(-rateLimitVisitorTTL)
-		rl.mu.Lock()
-		for key, v := range rl.visitors {
-			if v.lastSeen.Before(cutoff) {
-				delete(rl.visitors, key)
-			}
+		rl.evictIdle(time.Now().Add(-rateLimitVisitorTTL))
+	}
+}
+
+func (rl *rateLimiter) evictIdle(cutoff time.Time) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	for key, v := range rl.visitors {
+		if v.lastSeen.Before(cutoff) {
+			delete(rl.visitors, key)
 		}
-		rl.mu.Unlock()
 	}
 }
 
@@ -68,12 +72,9 @@ func (rl *rateLimiter) allow(key string) bool {
 	return v.limiter.Allow()
 }
 
-// rateLimitMiddleware throttles per authenticated subject.
-//
-// It must be installed inside authMiddleware so the bucket key is the verified
-// user id. Keying on client IP instead would let one user behind a shared NAT
-// exhaust another's budget, and would let an attacker rotate source addresses to
-// escape the limit entirely.
+// rateLimitMiddleware throttles per authenticated subject. It must sit inside
+// authMiddleware so the bucket key is the verified user id, not a spoofable or
+// NAT-shared client address.
 func rateLimitMiddleware(rl *rateLimiter, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		userId, ok := r.Context().Value(fieldUserId).(string)

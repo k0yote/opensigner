@@ -106,6 +106,10 @@ services:
       DB_SSLMODE: ${AUTH_SERVICE_DB_SSLMODE:-require}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:7050,http://localhost:7051}
+      # Set to "true" only when exactly one reverse proxy sits in front of this
+      # service; rate limiting then keys on the address that proxy saw instead
+      # of the proxy itself.
+      TRUST_PROXY: ${TRUST_PROXY:-false}
     networks:
       - frontend_network
       - backend_network
@@ -171,6 +175,9 @@ services:
       # OAuth client ID accepted for x-auth-provider: google. Unset means the
       # provider is rejected rather than accepting any Google-signed token.
       GOOGLE_JWT_AUDIENCE: ${GOOGLE_JWT_AUDIENCE:-}
+      # Permits fetching the JWKS over plaintext HTTP. Defaults to failing
+      # closed; docker-compose.dev.yml overrides it for local runs.
+      ALLOW_INSECURE_AUTH_SERVER: ${ALLOW_INSECURE_AUTH_SERVER:-false}
       DB_NAME: ${HOT_STORAGE_DB_NAME:-hotstorage}
       DB_USER: ${HOT_STORAGE_DB_USER:-postgres}
       DB_PASS: ${HOT_STORAGE_DB_PASS:?HOT_STORAGE_DB_PASS must be set}
@@ -204,17 +211,16 @@ services:
       secrets:
         - node_auth_token
     image: openfort/keys-docs:latest
-    environment:
-      PORT: ${DOCS_CONTAINER_PORT:-4173}
     networks:
       - frontend_network
+    # 4173 is fixed in docs_nginx.conf; only the host port is configurable.
     expose:
-      - "${DOCS_CONTAINER_PORT:-4173}"
+      - "4173"
     ports:
-      - "${DOCS_HOST_PORT:-7055}:${DOCS_CONTAINER_PORT:-4173}"
+      - "${DOCS_HOST_PORT:-7055}:4173"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- \"http://localhost:$$PORT/health.json\" >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- \"http://localhost:4173/health.json\" >/dev/null 2>&1 || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 10

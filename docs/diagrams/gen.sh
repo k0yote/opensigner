@@ -7,6 +7,9 @@ DIAGRAMS_DIR="diagrams"
 
 mkdir -p "$OUTPUT_DIR"
 
+# A bare `wait` always returns 0, so collect each compile's status explicitly:
+# a failed diagram must fail the build, not ship a stale or missing SVG.
+pids=""
 for file in "$DIAGRAMS_DIR"/*.d2; do
     [ -f "$file" ] || continue
 
@@ -14,6 +17,11 @@ for file in "$DIAGRAMS_DIR"/*.d2; do
     output_file="$OUTPUT_DIR/${base_name}.svg"
 
     d2 --pad=0 --theme 101 --dark-theme 200 "$file" "$output_file" &
+    pids="$pids $!"
 done
 
-wait
+failed=0
+for pid in $pids; do
+    wait "$pid" || failed=1
+done
+exit "$failed"

@@ -53,3 +53,24 @@ func initDB() error {
 	slog.Info("DB initialized")
 	return nil
 }
+
+// assertSharesAreBound fails when any stored share predates the device-bound
+// ciphertext format. This release reads only bound shares, so booting against a
+// legacy store would break wallet recovery for every affected user.
+func assertSharesAreBound() error {
+	var unbound int64
+	err := db.Model(&Device{}).
+		Where("share NOT LIKE ?", boundSharePrefix+"%").
+		Count(&unbound).Error
+	if err != nil {
+		return fmt.Errorf("failed to check stored share format: %w", err)
+	}
+	if unbound > 0 {
+		return fmt.Errorf(
+			"%d stored share(s) are not in the bound %q format; this release cannot read them. "+
+				"Re-register the affected devices on a fresh share store before deploying",
+			unbound, boundSharePrefix,
+		)
+	}
+	return nil
+}

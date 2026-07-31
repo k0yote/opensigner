@@ -42,9 +42,8 @@ func validateConfig() error {
 	}
 	if parsed.Scheme != "https" && !allowInsecureAuthServer {
 		return fmt.Errorf(
-			"AUTH_SERVER_URL must use https (got %q); an attacker able to rewrite this "+
-				"channel can substitute the JWKS and forge tokens for any user. Set "+
-				"ALLOW_INSECURE_AUTH_SERVER=true to override for local development",
+			"AUTH_SERVER_URL must use https (got %q); set ALLOW_INSECURE_AUTH_SERVER=true "+
+				"to override for local development only",
 			parsed.Scheme,
 		)
 	}

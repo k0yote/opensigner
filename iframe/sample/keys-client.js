@@ -96,8 +96,6 @@ class Openfort {
     );
   }
 
-
-
   async getDevice(deviceID, requestId = null) {
     return await this._makeRequest(
       "GET",
@@ -116,10 +114,6 @@ class Openfort {
     return await this._makeRequest("GET", endpoint, null, requestId);
   }
 
-
-
-
-
   async getShamirDevice(deviceId, requestId = null) {
     return await this._makeRequest(
       "GET",
@@ -137,7 +131,6 @@ class Openfort {
       requestId,
     );
   }
-
 
   async importShare(shareData, requestId = null) {
     return await this._makeRequest(

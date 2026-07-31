@@ -46,6 +46,15 @@ updates:
     cooldown:
       default-days: 7
 
+  # Covers the digest-pinned images referenced only by docker-compose.yml
+  # (iframe, shield, postgres), which the Dockerfile entries above never see.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

@@ -46,31 +46,24 @@
 					],
 					"request": {
 						"method": "POST",
-						"header": [],
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Origin",
+								"value": "{{origin}}"
+							}
+						],
 						"body": {
-							"mode": "formdata",
-							"formdata": [
-								{
-									"key": "email",
-									"value": "{{email}}",
-									"type": "text"
-								},
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "text"
-								},
-								{
-									"key": "name",
-									"value": "{{displayname}}",
-									"type": "text"
-								},
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "text"
+							"mode": "raw",
+							"raw": "{\n    \"email\": \"{{email}}\",\n    \"password\": \"{{password}}\",\n    \"name\": \"{{displayname}}\",\n    \"username\": \"{{username}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
 								}
-							]
+							}
 						},
 						"url": {
 							"raw": "{{auth_server}}/api/auth/sign-up/email",
@@ -106,21 +99,24 @@
 					],
 					"request": {
 						"method": "POST",
-						"header": [],
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Origin",
+								"value": "{{origin}}"
+							}
+						],
 						"body": {
-							"mode": "formdata",
-							"formdata": [
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "text"
-								},
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "text"
+							"mode": "raw",
+							"raw": "{\n    \"username\": \"{{username}}\",\n    \"password\": \"{{password}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
 								}
-							]
+							}
 						},
 						"url": {
 							"raw": "{{auth_server}}/api/auth/sign-in/username",
@@ -189,10 +185,15 @@
 					"name": "Create device",
 					"request": {
 						"method": "POST",
-						"header": [],
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"accountType\": \"Smart Account\",\n  \"chainType\": \"EVM\",\n  \"address\": \"0xf7b4c54cca21cccf42796502bf94e2838fbd44c4\",\n  \"chainId\": {{chainId}},\n  \"share\": \"7d526b7e99fbf52850a183\"\n}"
+							"raw": "{\n  \"accountType\": \"Smart Account\",\n  \"chainType\": \"EVM\",\n  \"address\": \"{{address}}\",\n  \"chainId\": {{chainId}},\n  \"share\": \"7d526b7e99fbf52850a183\"\n}"
 						},
 						"url": {
 							"raw": "{{hot_storage_server}}/v2/devices/create",
@@ -206,7 +207,19 @@
 							]
 						}
 					},
-					"response": []
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"var res = pm.response.json();",
+									"pm.environment.set('accountId', res.account)"
+								]
+							}
+						}
+					]
 				},
 				{
 					"name": "List accounts",
@@ -230,10 +243,15 @@
 					"name": "Recover device",
 					"request": {
 						"method": "POST",
-						"header": [],
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"account\": \"ade7b750-9b52-4831-8507-14b25dbc4a7b\"\n}",
+							"raw": "{\n  \"account\": \"{{accountId}}\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -258,10 +276,15 @@
 					"name": "Register device",
 					"request": {
 						"method": "POST",
-						"header": [],
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"account\": \"ade7b750-9b52-4831-8507-14b25dbc4a7b\",\n  \"share\": \"7d526b7e99fbf52850a183\"\n}",
+							"raw": "{\n  \"account\": \"{{accountId}}\",\n  \"share\": \"7d526b7e99fbf52850a183\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -376,11 +399,11 @@
 		},
 		{
 			"key": "chainId",
-			"value": ""
+			"value": "80002"
 		},
 		{
 			"key": "address",
-			"value": ""
+			"value": "0xf7b4c54cca21cccf42796502bf94e2838fbd44c4"
 		},
 		{
 			"key": "share",
@@ -393,6 +416,10 @@
 		{
 			"key": "cookieFieldName",
 			"value": ""
+		},
+		{
+			"key": "origin",
+			"value": "http://localhost:7051"
 		}
 	]
 }

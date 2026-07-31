@@ -16,14 +16,12 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		// Every header the browser announces in Access-Control-Request-Headers must
-		// be covered here, or the preflight fails and the real request is never
-		// sent -- which surfaces in the client as an opaque network error rather
-		// than an HTTP status. `traceparent` is W3C Trace Context and the
-		// x-openfort-* headers carry span attributes; the official iframe client
-		// attaches all four, so omitting any one of them blocks every call it makes.
+		// Every header a client sends must be listed here, or the preflight fails
+		// and the browser reports an opaque network error. The official iframe
+		// client sends traceparent and the x-openfort-* tracing headers;
+		// x-token-type accompanies third-party provider tokens.
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-auth-provider, x-request-id, x-player-token, x-cookie-field, "+
-			"traceparent, x-openfort-user-id, x-openfort-chain-id, x-openfort-flow-name")
+			"x-token-type, traceparent, x-openfort-user-id, x-openfort-chain-id, x-openfort-flow-name")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		w.Header().Set("Vary", "Origin")
 		if r.Method == "OPTIONS" {

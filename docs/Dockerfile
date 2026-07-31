@@ -5,26 +5,10 @@ WORKDIR /app
 
 RUN apk add --no-cache curl git make
 
-# D2 is installed from a pinned release tarball verified against a known checksum.
-# Piping an install script straight from the network into a shell would let
-# whoever controls that endpoint execute arbitrary code in the build, and would
-# silently pick up a different version on every rebuild.
-ARG D2_VERSION=0.7.1
-ARG D2_SHA256_ARM64=ce3a0b985a8f91335a826c254b3a88736fd81afcdd08b58f6c749d2add6864b0
-ARG D2_SHA256_AMD64=eb172adf59f38d1e5a70ab177591356754ffaf9bebb84e0ca8b767dfb421dad7
-RUN set -eu; \
-    arch="$(uname -m)"; \
-    case "$arch" in \
-      aarch64|arm64) d2arch=arm64; expected="$D2_SHA256_ARM64" ;; \
-      x86_64|amd64)  d2arch=amd64; expected="$D2_SHA256_AMD64" ;; \
-      *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
-    esac; \
-    tarball="d2-v${D2_VERSION}-linux-${d2arch}.tar.gz"; \
-    curl -fsSLO "https://github.com/terrastruct/d2/releases/download/v${D2_VERSION}/${tarball}"; \
-    echo "${expected}  ${tarball}" | sha256sum -c -; \
-    tar -xzf "$tarball"; \
-    make -C "d2-v${D2_VERSION}" install; \
-    rm -rf "$tarball" "d2-v${D2_VERSION}"
+# D2 is installed from a pinned release tarball verified against a known
+# checksum; the install script is the single source of that pin, shared with CI.
+COPY scripts/install-d2.sh scripts/install-d2.sh
+RUN PREFIX=/usr/local scripts/install-d2.sh
 
 RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
 

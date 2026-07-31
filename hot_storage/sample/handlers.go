@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strconv"
@@ -28,14 +29,10 @@ const (
 	errConflict = "resource already exists"
 )
 
-// contentTypeMiddleware requires a parsed JSON media type on any request with a
-// body.
-//
-// The media type is parsed, not substring-matched: a substring test also accepts
-// values such as "text/plain; x=application/json". Both "text/plain" and an
-// absent Content-Type are CORS-safelisted, so a browser sends them cross-origin
-// with no preflight. Requiring exactly application/json keeps every
-// state-changing request behind a preflight.
+// contentTypeMiddleware requires exactly application/json (parsed, not
+// substring-matched) on requests with a body. text/plain and an absent
+// Content-Type are CORS-safelisted, so accepting them would let state-changing
+// requests skip the CORS preflight.
 func contentTypeMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
@@ -66,7 +63,9 @@ func listenAndServe(addr string) {
 
 	// Order matters: the rate limiter keys on the authenticated user id, so it
 	// sits inside authMiddleware.
-	handler := contentTypeMiddleware(authMiddleware(rateLimitMiddleware(newRateLimiter(), mux)))
+	rl := newRateLimiter()
+	go rl.sweep()
+	handler := contentTypeMiddleware(authMiddleware(rateLimitMiddleware(rl, mux)))
 	handler = corsMiddleware(handler)
 
 	// Health endpoint outside auth middleware
@@ -77,6 +76,35 @@ func listenAndServe(addr string) {
 	if err := http.ListenAndServe(addr, root); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}
+}
+
+// newDevice mints a device id and encrypts the share bound to it, so a call
+// site cannot store a share under a different id than the one it was bound to.
+func newDevice(share, signerID string, isPrimary bool) (Device, error) {
+	deviceID := uuid.NewString()
+	encryptedShare, err := encryptShare(share, deviceID)
+	if err != nil {
+		return Device{}, err
+	}
+	return Device{
+		ID:        deviceID,
+		Share:     encryptedShare,
+		IsPrimary: isPrimary,
+		SignerId:  signerID,
+	}, nil
+}
+
+// decryptDeviceShare decrypts a device's stored share, logging any failure: a
+// decrypt error here is either key rotation gone wrong or a ciphertext moved
+// between rows, and both need an audit trail.
+func decryptDeviceShare(w http.ResponseWriter, device Device) (string, bool) {
+	share, err := decryptShare(device.Share, device.ID)
+	if err != nil {
+		slog.Error("share decryption failed", "device_id", device.ID, "error", err)
+		http.Error(w, "failed to decrypt share", http.StatusInternalServerError)
+		return "", false
+	}
+	return share, true
 }
 
 func handleRegisterDeviceV2(w http.ResponseWriter, r *http.Request) {
@@ -110,19 +138,11 @@ func handleRegisterDeviceV2(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The id is generated first because the share is bound to it.
-	deviceID := uuid.NewString()
-	encryptedShare, err := encryptShare(req.Share, deviceID)
+	// This endpoint saves only "secondary" shares.
+	device, err := newDevice(req.Share, account.SignerId, false)
 	if err != nil {
 		http.Error(w, "failed to encrypt share", http.StatusInternalServerError)
 		return
-	}
-
-	device := Device{
-		ID:        deviceID,
-		Share:     encryptedShare,
-		IsPrimary: false, // with this endpoint we save only "secondary" shares
-		SignerId:  account.SignerId,
 	}
 	if err := db.Create(&device).Error; err != nil {
 		http.Error(w, "failed to register device", http.StatusInternalServerError)
@@ -186,9 +206,8 @@ func handleRecoverDeviceV2(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	decryptedShare, err := decryptShare(device.Share, device.ID)
-	if err != nil {
-		http.Error(w, "failed to decrypt share", http.StatusInternalServerError)
+	decryptedShare, ok := decryptDeviceShare(w, device)
+	if !ok {
 		return
 	}
 
@@ -334,17 +353,9 @@ func handleCreateDeviceV2(w http.ResponseWriter, r *http.Request) {
 			return fmt.Errorf("failed to create a signer")
 		}
 
-		deviceID := uuid.NewString()
-		encryptedShare, err := encryptShare(req.Share, deviceID)
+		device, err := newDevice(req.Share, signer.ID, true)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt share")
-		}
-
-		device := Device{
-			ID:        deviceID,
-			Share:     encryptedShare,
-			IsPrimary: true,
-			SignerId:  signer.ID,
 		}
 		if err := tx.Create(&device).Error; err != nil {
 			return fmt.Errorf("failed to register device")
@@ -432,9 +443,8 @@ func handleInitDevice(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		decryptedShare, err := decryptShare(device.Share, device.ID)
-		if err != nil {
-			http.Error(w, "failed to decrypt share", http.StatusInternalServerError)
+		decryptedShare, ok := decryptDeviceShare(w, device)
+		if !ok {
 			return
 		}
 
@@ -481,17 +491,9 @@ func handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if !isPrimary {
-			deviceID := uuid.NewString()
-			encryptedShare, err := encryptShare(req.Share, deviceID)
+			device, err := newDevice(req.Share, account.SignerId, false)
 			if err != nil {
 				return fmt.Errorf("failed to encrypt share")
-			}
-
-			device := Device{
-				ID:        deviceID,
-				Share:     encryptedShare,
-				IsPrimary: false,
-				SignerId:  account.SignerId,
 			}
 			if err := tx.Create(&device).Error; err != nil {
 				return fmt.Errorf("failed to register device")
@@ -517,17 +519,9 @@ func handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 				return fmt.Errorf("failed to save signer")
 			}
 
-			deviceID := uuid.NewString()
-			encryptedShare, err := encryptShare(req.Share, deviceID)
+			device, err := newDevice(req.Share, signer.ID, true)
 			if err != nil {
 				return fmt.Errorf("failed to encrypt share")
-			}
-
-			device := Device{
-				ID:        deviceID,
-				Share:     encryptedShare,
-				IsPrimary: true,
-				SignerId:  signer.ID,
 			}
 			if err := tx.Create(&device).Error; err != nil {
 				return fmt.Errorf("failed to register device")
@@ -593,9 +587,8 @@ func handleGetDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decryptedShare, err := decryptShare(device.Share, device.ID)
-	if err != nil {
-		http.Error(w, "failed to decrypt share", http.StatusInternalServerError)
+	decryptedShare, ok := decryptDeviceShare(w, device)
+	if !ok {
 		return
 	}
 
@@ -632,9 +625,8 @@ func handleGetPrimaryDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decryptedShare, err := decryptShare(device.Share, device.ID)
-	if err != nil {
-		http.Error(w, "failed to decrypt share", http.StatusInternalServerError)
+	decryptedShare, ok := decryptDeviceShare(w, device)
+	if !ok {
 		return
 	}
 
@@ -763,8 +755,12 @@ func handleImportShare(w http.ResponseWriter, r *http.Request) {
 	txErr := db.Transaction(func(tx *gorm.DB) error {
 		// Uniqueness is enforced on the address as stored, matching accAddress above.
 		var existing Account
-		if err := tx.First(&existing, "address = ?", accAddress).Error; err == nil {
+		err := tx.First(&existing, "address = ?", accAddress).Error
+		if err == nil {
 			return fmt.Errorf("conflict")
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("database error")
 		}
 
 		signerId := strings.TrimPrefix(req.SignerId, "sig_")
@@ -777,17 +773,9 @@ func handleImportShare(w http.ResponseWriter, r *http.Request) {
 			return fmt.Errorf("failed to create signer")
 		}
 
-		deviceID := uuid.NewString()
-		encryptedShare, err := encryptShare(req.Share, deviceID)
+		device, err := newDevice(req.Share, signer.ID, true)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt share")
-		}
-
-		device := Device{
-			ID:        deviceID,
-			Share:     encryptedShare,
-			IsPrimary: true,
-			SignerId:  signer.ID,
 		}
 		if err := tx.Create(&device).Error; err != nil {
 			return fmt.Errorf("failed to create device")
@@ -901,18 +889,10 @@ func handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deviceID := uuid.NewString()
-	encryptedShare, err := encryptShare(req.Share, deviceID)
+	device, err := newDevice(req.Share, account.SignerId, false)
 	if err != nil {
 		http.Error(w, "failed to encrypt share", http.StatusInternalServerError)
 		return
-	}
-
-	device := Device{
-		ID:        deviceID,
-		Share:     encryptedShare,
-		IsPrimary: false,
-		SignerId:  account.SignerId,
 	}
 	if err := db.Create(&device).Error; err != nil {
 		http.Error(w, "failed to create device", http.StatusInternalServerError)

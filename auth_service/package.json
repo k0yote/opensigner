@@ -11,11 +11,11 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "check": "biome check .",
-    "check:fix": "biome check --write ."
+    "check:fix": "biome check --write .",
+    "test": "vitest run"
   },
   "dependencies": {
     "better-auth": "1.6.25",
-    "body-parser": "2.3.0",
     "cors": "2.8.5",
     "express": "5.2.1",
     "jsonwebtoken": "9.0.2",
@@ -29,7 +29,8 @@
     "@types/node": "24.1.0",
     "@types/pg": "8.15.5",
     "ts-node": "10.9.2",
-    "typescript": "5.8.3"
+    "typescript": "5.8.3",
+    "vitest": "4.1.10"
   },
   "pnpm": {
     "overrides": {

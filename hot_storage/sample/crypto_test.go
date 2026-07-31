@@ -31,6 +31,9 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("encryptShare(%q) failed: %v", plaintext, err)
 		}
+		if !strings.HasPrefix(ciphertext, boundSharePrefix) {
+			t.Fatalf("ciphertext %q lacks the bound format prefix", ciphertext)
+		}
 		got, err := decryptShare(ciphertext, "device-1")
 		if err != nil {
 			t.Fatalf("decryptShare failed: %v", err)
@@ -66,14 +69,14 @@ func TestDecryptShareRejectsTamperedCiphertext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encrypt failed: %v", err)
 	}
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(ciphertext, sharePrefix))
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(ciphertext, boundSharePrefix))
 	if err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
 
 	// Flip a bit in the final byte; GCM must reject it rather than return garbage.
 	raw[len(raw)-1] ^= 0x01
-	if _, err := decryptShare(sharePrefix+base64.StdEncoding.EncodeToString(raw), "device-1"); err == nil {
+	if _, err := decryptShare(boundSharePrefix+base64.StdEncoding.EncodeToString(raw), "device-1"); err == nil {
 		t.Fatal("expected tampered ciphertext to fail authentication")
 	}
 }
@@ -81,10 +84,12 @@ func TestDecryptShareRejectsTamperedCiphertext(t *testing.T) {
 func TestDecryptShareRejectsMalformedInput(t *testing.T) {
 	withTestKey(t)
 
+	// Inputs carry the format prefix so each reaches the branch it targets;
+	// unprefixed values are covered by TestDecryptShareRequiresThePrefix.
 	for _, name := range []string{
-		"not-base64!!!",
-		"",
-		base64.StdEncoding.EncodeToString([]byte("short")), // shorter than the nonce
+		boundSharePrefix + "not-base64!!!",
+		boundSharePrefix,
+		boundSharePrefix + base64.StdEncoding.EncodeToString([]byte("short")), // shorter than the nonce
 	} {
 		if _, err := decryptShare(name, "device-1"); err == nil {
 			t.Errorf("expected an error for malformed input %q", name)

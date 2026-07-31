@@ -111,16 +111,16 @@ Services exposed by default:
 - `7054`: hot storage
 - `7055`: docs (run with `make docs`)
 
-To start a subset of services (for example if you already have a DB or auth), remove services from the `docker-compose` command:
+To start a subset of services (for example if you already have a DB or auth), remove services from the `docker compose` command:
 
 ```bash
-docker-compose up postgres auth_service iframe iframe-sample hot_storage cold_storage docs
+docker compose up postgres auth_service iframe iframe-sample hot_storage cold_storage docs
 ```
 
 We also provide `docker-compose.map.db.ports.yml` to map the internal Postgres port to host port `7056`:
 
 ```bash
-docker-compose -f docker-compose.yml -f docker-compose.map.db.ports.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.map.db.ports.yml up --build
 ```
 
 For configuration details, see [`docker-compose.yml`](docker-compose.yml) and the docs.

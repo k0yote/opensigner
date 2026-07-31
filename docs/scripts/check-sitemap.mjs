@@ -1,6 +1,7 @@
 import NodeFS from 'node:fs'
 import NodePath from 'node:path'
 import Process from 'node:process'
+import { SITE_URL, collectRoutes, findDistRoot, isIndexableRoute } from './dist.mjs'
 
 // Verifies the sitemap against what the build actually produced.
 //
@@ -9,15 +10,7 @@ import Process from 'node:process'
 // that does exist leaves it to be discovered by luck. Both drift silently as pages
 // are added or renamed, which is why this is a build step rather than a review
 // item.
-const SITE_URL = 'https://www.opensigner.dev'
-
-const distRoot = ['dist/public', 'dist']
-  .map((d) => NodePath.join(Process.cwd(), d))
-  .find((d) => NodeFS.existsSync(NodePath.join(d, 'index.html')))
-
-if (!distRoot) {
-  throw new Error('check-sitemap: no built output found — run `vocs build` first')
-}
+const distRoot = findDistRoot('check-sitemap')
 
 const sitemapPath = NodePath.join(distRoot, 'sitemap.xml')
 if (!NodeFS.existsSync(sitemapPath)) {
@@ -32,25 +25,7 @@ const listed = new Set(
   }),
 )
 
-function collectBuilt(dir, prefix = '') {
-  const found = new Set()
-  for (const entry of NodeFS.readdirSync(dir, { withFileTypes: true })) {
-    const full = NodePath.join(dir, entry.name)
-    if (entry.isDirectory()) {
-      for (const r of collectBuilt(full, `${prefix}/${entry.name}`)) found.add(r)
-      continue
-    }
-    if (!entry.name.endsWith('.html')) continue
-    if (entry.name === 'index.html') found.add(prefix || '/')
-    else found.add(`${prefix}/${entry.name.replace(/\.html$/, '')}`)
-  }
-  return found
-}
-
-// 404 and the internal root layout are not indexable pages.
-const built = new Set(
-  [...collectBuilt(distRoot)].filter((r) => !r.startsWith('/404') && !r.startsWith('/_root')),
-)
+const built = new Set(collectRoutes(distRoot).filter(isIndexableRoute))
 
 const phantom = [...listed].filter((r) => !built.has(r)).sort()
 const unlisted = [...built].filter((r) => !listed.has(r)).sort()

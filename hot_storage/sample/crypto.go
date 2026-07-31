@@ -14,10 +14,9 @@ import (
 
 var shareEncryptionKey []byte
 
-// Stored ciphertexts carry this prefix. It makes a stored value self-describing,
-// so anything not written by this scheme is refused outright instead of being fed
-// to the AEAD as arbitrary bytes.
-const sharePrefix = "v2:"
+// boundSharePrefix marks a ciphertext as device-bound. There is no other stored
+// format: a value without the prefix is refused, never decrypted.
+const boundSharePrefix = "v2:"
 
 func initEncryptionKey() error {
 	keyHex := os.Getenv("SHARE_ENCRYPTION_KEY")
@@ -47,15 +46,9 @@ func newGCM() (cipher.AEAD, error) {
 	return gcm, nil
 }
 
-// shareAAD binds a ciphertext to the device row that owns it.
-//
-// Encryption alone proves a value was produced by a holder of the key; it says
-// nothing about where that value belongs. Without this binding, anyone able to
-// write to the devices table could copy another user's encrypted share onto a
-// device they control and have the service decrypt it for them -- the ciphertext
-// is equally valid in any row. Including the device id as additional
-// authenticated data makes a ciphertext verifiable only in the row it was
-// written for.
+// shareAAD binds a ciphertext to the device row that owns it: without the
+// device id as additional authenticated data, a ciphertext copied into another
+// row would decrypt there just as well.
 func shareAAD(deviceID string) []byte {
 	return []byte("device:" + deviceID)
 }
@@ -78,18 +71,15 @@ func encryptShare(plaintext, deviceID string) (string, error) {
 	}
 
 	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), shareAAD(deviceID))
-	return sharePrefix + base64.StdEncoding.EncodeToString(ciphertext), nil
+	return boundSharePrefix + base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
 // decryptShare decrypts a stored share, authenticated against deviceID.
-//
-// Binding is unconditional: there is no unbound format to fall back to, so a
-// value that does not carry the prefix is rejected rather than decrypted.
 func decryptShare(encoded, deviceID string) (string, error) {
-	if !strings.HasPrefix(encoded, sharePrefix) {
+	if !strings.HasPrefix(encoded, boundSharePrefix) {
 		return "", fmt.Errorf("share is not in the bound format")
 	}
-	encoded = strings.TrimPrefix(encoded, sharePrefix)
+	encoded = strings.TrimPrefix(encoded, boundSharePrefix)
 	if deviceID == "" {
 		return "", fmt.Errorf("deviceID is required to decrypt a share")
 	}

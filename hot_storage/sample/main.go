@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 
@@ -9,11 +8,6 @@ import (
 )
 
 func main() {
-	// No flags are defined. Parsing exists so that an unrecognised argument -- a
-	// stale runbook still invoking the removed -migrate-shares, say -- exits with
-	// a clear error instead of silently starting a server that was not asked for.
-	flag.Parse()
-
 	if err := validateConfig(); err != nil {
 		fmt.Printf("invalid configuration: %v\n", err)
 		os.Exit(1)
@@ -31,6 +25,14 @@ func main() {
 	}
 
 	slog.Info("DB initialized")
+
+	// Refuse to boot against a share store this release cannot read. Surfacing
+	// the incompatibility at deploy time is recoverable; discovering it as a
+	// decrypt failure during wallet recovery is not.
+	if err := assertSharesAreBound(); err != nil {
+		slog.Error(fmt.Sprintf("startup check failed: %v", err))
+		os.Exit(1)
+	}
 
 	host := os.Getenv("HOST")
 	port := os.Getenv("PORT")

@@ -1,5 +1,3 @@
-// import bodyParser from "body-parser";
-// import cors from "cors";
 import { betterAuth } from "better-auth";
 import { toNodeHandler } from "better-auth/node";
 import { bearer } from "better-auth/plugins";
@@ -9,6 +7,7 @@ import cors from "cors";
 import type { Request, Response } from "express";
 import express from "express";
 import { Pool } from "pg";
+import { isOriginAllowed, resolveClientIp, secureCookiesFor } from "./helpers";
 
 const jwtSecret = process.env["JWT_SECRET"];
 if (!jwtSecret) {
@@ -29,21 +28,15 @@ const allowedOrigins = process.env["ALLOWED_ORIGINS"]
   ? process.env["ALLOWED_ORIGINS"].split(",")
   : ["http://localhost:7050", "http://localhost:7051"];
 
-// Cookie security is derived from the scheme of baseURL, not from NODE_ENV. That
-// coupling is easy to get wrong in the unsafe direction: a deployment served over
-// TLS but configured with an http:// baseURL would issue session cookies with no
-// Secure flag. Stating it explicitly keeps the flag tied to the scheme asserted
-// at startup.
-const useSecureCookies = baseURL?.startsWith("https://") ?? false;
+// Derived from the base URL's scheme, not NODE_ENV, so a TLS deployment with an
+// http:// baseURL cannot silently issue cookies without the Secure flag.
+const useSecureCookies = secureCookiesFor(baseURL);
 
 export const auth = betterAuth({
   baseURL,
-  // The application secret belongs at this top level. better-auth resolves it as
-  // `secret` -> BETTER_AUTH_SECRET -> AUTH_SECRET -> a documented default
-  // constant, and the jwt plugin's options are a separate namespace that is not
-  // consulted for it. Because that chain ends in a usable default rather than an
-  // error, a secret supplied anywhere else fails silently, which is what
-  // assertSecretIsSafe below exists to catch.
+  // The secret must be this top-level option; the jwt plugin's options are not
+  // consulted for it, and better-auth's fallback chain ends in a usable default
+  // constant rather than an error. assertStartupConfig verifies it applied.
   secret: jwtSecret,
   advanced: {
     useSecureCookies,
@@ -67,11 +60,9 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
   },
-  // Throttle credential endpoints. Sign-in is the cheapest way to attack this
-  // service: a correct password yields a token that hot_storage will exchange for
-  // a key share, so an unmetered sign-in endpoint is an offline-speed password
-  // oracle exposed over HTTP. The tighter custom rule covers the paths where a
-  // guess is worth something.
+  // Throttle credential endpoints: a correct password guess here yields a token
+  // hot_storage will exchange for a key share. Rule keys must exactly match
+  // better-auth route paths, or the rule silently never applies.
   rateLimit: {
     enabled: true,
     window: 60,
@@ -79,30 +70,23 @@ export const auth = betterAuth({
     customRules: {
       "/sign-in/email": { window: 60, max: 5 },
       "/sign-in/username": { window: 60, max: 5 },
-      // Sign-up is bounded to curb bulk account creation, but the budget is
-      // per-IP and shared by everyone behind one address -- an office NAT or a
-      // CI runner is a single client here. Left too tight it locks out
-      // legitimate users rather than attackers.
+      // Per-IP budget shared by everyone behind one address (office NAT, CI
+      // runner); too tight locks out legitimate users rather than attackers.
       "/sign-up/email": { window: 3600, max: 30 },
-      "/forget-password": { window: 3600, max: 5 },
+      "/request-password-reset": { window: 3600, max: 5 },
       "/reset-password": { window: 3600, max: 5 },
     },
   },
   trustedOrigins: allowedOrigins,
 });
 
-// Fail closed unless the resolved secret is the one we supplied.
-//
-// This secret signs session cookies and verification tokens, and encrypts the
-// JWKS private signing key at rest -- the key whose signatures hot_storage trusts
-// when it releases a wallet key share. A service running on the library's default
-// secret is therefore not merely misconfigured: anyone holding a copy of the
-// database can decrypt that signing key using a published constant and mint
-// tokens for any user. The library only refuses to boot on the default in
-// production mode, so assert it here regardless of environment.
+// The secret encrypts the JWKS signing key at rest, so running on the library's
+// published default constant would let anyone with a database copy mint tokens.
+// The library only refuses the default in production mode; assert it here
+// regardless of environment.
 const BETTER_AUTH_DEFAULT_SECRET = "better-auth-secret-12345678901234567890";
 
-async function assertSecretIsSafe(): Promise<void> {
+async function assertStartupConfig(): Promise<void> {
   if (!baseURL) {
     console.error(
       "FATAL: BETTER_AUTH_BASE_URL must be set. Without it the issued JWTs carry " +
@@ -148,28 +132,21 @@ app.use(
 );
 
 // Rate limiting is keyed on the client IP, which better-auth reads from
-// x-forwarded-for. Two failure modes have to be closed off here.
-//
-// If the header is absent, better-auth cannot derive a key and skips rate
-// limiting altogether outside development -- so the limits configured above would
-// silently do nothing on a direct connection.
-//
-// If the header is present but untrusted, a caller can supply a fresh value per
-// request and each one gets its own bucket, which evades the limit just as
-// completely.
-//
-// So: unless a trusted proxy is declared, the header is overwritten with the
-// address of the peer that actually opened the socket.
+// x-forwarded-for and requires to be a single valid address -- anything it
+// cannot resolve falls back to ONE bucket shared by every caller, so a forged
+// or absent header either evades the limit or lets one attacker exhaust it for
+// everyone. resolveClientIp rewrites the header to the one address that can be
+// trusted for the deployment shape (see .env.example for TRUST_PROXY).
 const trustProxy = process.env["TRUST_PROXY"] === "true";
 
 app.use((req, _res, next) => {
-  if (!trustProxy) {
-    const socketIp = req.socket.remoteAddress;
-    if (socketIp) {
-      req.headers["x-forwarded-for"] = socketIp;
-    } else {
-      delete req.headers["x-forwarded-for"];
-    }
+  const rawForwardedFor = req.headers["x-forwarded-for"];
+  const forwardedFor = Array.isArray(rawForwardedFor) ? rawForwardedFor.join(",") : rawForwardedFor;
+  const clientIp = resolveClientIp(forwardedFor, req.socket.remoteAddress, trustProxy);
+  if (clientIp) {
+    req.headers["x-forwarded-for"] = clientIp;
+  } else {
+    delete req.headers["x-forwarded-for"];
   }
   next();
 });
@@ -187,15 +164,13 @@ app.use(express.json());
 // Nginx sends X-Request-Origin header; returns 200 if allowed, 403 if not.
 // Also returns X-Allowed-Origins header for CSP frame-ancestors.
 app.get("/v1/projects/validate-origin", (req: Request, res: Response) => {
-  // Default missing origin to a safe value that won't match any allowed origin,
-  // matching the backend's pattern (ProjectController.ts defaults to "openfort.io").
-  const requestOrigin = (req.headers["x-request-origin"] as string | undefined) || "openfort.io";
-  const allowedOriginsStr = allowedOrigins.join(" ");
+  // A missing header is refused outright. Substituting a default domain here
+  // would validate every referrer-suppressed load the moment that domain is
+  // added to the allow-list.
+  const requestOrigin = req.headers["x-request-origin"] as string | undefined;
 
-  const isAllowed = allowedOrigins.some((origin) => requestOrigin === origin);
-
-  if (isAllowed) {
-    res.set("X-Allowed-Origins", allowedOriginsStr);
+  if (isOriginAllowed(requestOrigin, allowedOrigins)) {
+    res.set("X-Allowed-Origins", allowedOrigins.join(" "));
     res.sendStatus(200);
   } else {
     res.sendStatus(403);
@@ -214,9 +189,15 @@ const PORT = process.env["PORT"] || 3000;
 // import would make the service appear reachable during migrations and start a
 // listener nothing owns.
 if (require.main === module) {
-  void assertSecretIsSafe().then(() => {
+  void (async () => {
+    try {
+      await assertStartupConfig();
+    } catch (err) {
+      console.error("FATAL: startup checks could not run:", err);
+      process.exit(1);
+    }
     app.listen(PORT, () => {
       console.log(`Better Auth server running on http://${HOST}:${PORT}`);
     });
-  });
+  })();
 }
