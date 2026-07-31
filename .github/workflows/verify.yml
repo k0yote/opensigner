@@ -193,6 +193,90 @@ jobs:
           fi
           echo "$files" | xargs shellcheck
 
+      - name: Syntax-check sample client JS
+        run: node --check iframe/sample/keys-client.js
+
+  workflows:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+
+      - name: zizmor
+        run: pipx run zizmor==1.28.0 .github/workflows/
+
+  e2e:
+    name: API end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      JWT_SECRET: ci-e2e-placeholder-secret-at-least-32-chars
+      SHARE_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      POSTGRES_PASSWORD: ci-e2e-password
+      AUTH_SERVICE_DB_PASS: ci-e2e-password
+      HOT_STORAGE_DB_PASS: ci-e2e-password
+      COLD_STORAGE_DB_PASS: ci-e2e-password
+      BETTER_AUTH_BASE_URL: http://localhost:7052
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
+        with:
+          version: 10.28.2
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Install newman
+        run: pnpm install --frozen-lockfile
+
+      # The dev overlay disables DB TLS: the stock postgres image ships without
+      # certificates, and DB TLS is not what this job verifies.
+      - name: Start auth and hot storage
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+            up -d --build postgres auth_service hot_storage
+
+      - name: Wait for services
+        run: |
+          for url in http://localhost:7052/health http://localhost:7054/health; do
+            for _ in $(seq 1 30); do
+              if curl -fsS "$url" >/dev/null 2>&1; then break; fi
+              sleep 2
+            done
+            curl -fsS "$url" >/dev/null
+          done
+
+      - name: Run API suite
+        run: |
+          pnpm exec newman run docs/public/postman/keys.json \
+            --env-var auth_server=http://localhost:7052 \
+            --env-var hot_storage_server=http://localhost:7054 \
+            --env-var origin=http://localhost:7051 \
+            --env-var chainId=80002 \
+            --env-var address="0xe2e$(printf '%037d' "$GITHUB_RUN_ID")" \
+            --env-var email="e2e-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT@example.com" \
+            --env-var username="e2e$GITHUB_RUN_ID$GITHUB_RUN_ATTEMPT" \
+            --env-var displayname="CI E2E" \
+            --env-var password="a-strong-ci-password-123"
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --tail 100
+
   compose:
     name: Compose config
     runs-on: ubuntu-latest

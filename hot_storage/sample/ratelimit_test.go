@@ -85,3 +85,19 @@ func TestRateLimitEvictsIdleVisitors(t *testing.T) {
 		t.Fatal("an active visitor was evicted")
 	}
 }
+
+func TestRateLimitRefillsAfterWait(t *testing.T) {
+	rl := newRateLimiter()
+	for i := 0; i < rateLimitBurst; i++ {
+		rl.allow("refill-user")
+	}
+	if rl.allow("refill-user") {
+		t.Fatal("bucket should be empty immediately after the burst")
+	}
+
+	// At rateLimitPerSecond tokens/s, 250ms is enough for at least one token.
+	time.Sleep(250 * time.Millisecond)
+	if !rl.allow("refill-user") {
+		t.Fatal("bucket did not refill after waiting")
+	}
+}

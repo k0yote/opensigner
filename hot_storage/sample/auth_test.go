@@ -198,3 +198,9 @@ func TestIsOriginAllowed(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateThirdPartyRejectsPlayFab(t *testing.T) {
+	if _, err := validateThirdPartyAuth("token", authProviderPlayFab); err == nil {
+		t.Fatal("expected the unimplemented playfab provider to be rejected")
+	}
+}
