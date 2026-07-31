@@ -2,6 +2,10 @@
 
 set -e
 
+# install-d2.sh installs to ~/.local/bin by default, which build hosts
+# (Vercel included) do not put on PATH.
+PATH="$HOME/.local/bin:$PATH"
+
 OUTPUT_DIR="public/diagrams"
 DIAGRAMS_DIR="diagrams"
 
