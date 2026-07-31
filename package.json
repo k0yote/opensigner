@@ -2,7 +2,7 @@
   "private": true,
   "license": "MIT",
   "engines": {
-    "node": ">=22.5"
+    "node": ">=24"
   },
   "scripts": {
     "docs:build": "pnpm -C docs run build",
@@ -10,5 +10,8 @@
     "docs:diagrams": "pnpm -C docs run diagrams",
     "docs:preview": "pnpm -C docs run preview"
   },
-  "packageManager": "pnpm@10.28.2"
+  "packageManager": "pnpm@10.28.2",
+  "devDependencies": {
+    "newman": "6.2.2"
+  }
 }

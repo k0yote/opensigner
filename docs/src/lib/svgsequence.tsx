@@ -2,10 +2,23 @@
 
 import { useEffect, useState } from 'react';
 
-export function SVGSequence({ imgSize = '100%', svgUrls, interval = 2000 }) {
+type SVGSequenceProps = {
+    /** Frame URLs, rendered in order and cycled. */
+    svgUrls: readonly string[];
+    /** Any CSS width value. */
+    imgSize?: string;
+    /** Milliseconds per frame. */
+    interval?: number;
+};
+
+export function SVGSequence({ imgSize = '100%', svgUrls, interval = 2000 }: SVGSequenceProps) {
     const [current, setCurrent] = useState(0);
 
     useEffect(() => {
+        // A zero-length sequence would make the modulo below divide by zero and
+        // leave the index NaN, so there is nothing to animate.
+        if (svgUrls.length === 0) return;
+
         const timer = setInterval(() => {
             setCurrent(prev => (prev + 1) % svgUrls.length);
         }, interval);
@@ -15,7 +28,7 @@ export function SVGSequence({ imgSize = '100%', svgUrls, interval = 2000 }) {
 
     return (
         <div className="svg-animation-container" style={{ position: 'relative', width: '100%', backgroundColor: 'transparent' }}>
-            {svgUrls.map((url, index) => (
+            {svgUrls.map((url: string, index: number) => (
                 <img
                     key={url}
                     src={url}

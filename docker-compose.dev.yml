@@ -1,4 +1,15 @@
 services:
+  # The stock postgres image is built without TLS, so `sslmode=require` cannot
+  # connect. Local runs therefore talk to the database in plaintext; production
+  # does not apply this overlay and keeps the `require` default.
+  auth_migrate:
+    environment:
+      DB_SSLMODE: disable
+
+  cold_storage:
+    environment:
+      DB_SSL_MODE: disable
+
   auth_service:
     environment:
       DB_SSLMODE: disable
@@ -6,3 +17,7 @@ services:
   hot_storage:
     environment:
       DB_SSLMODE: disable
+      # Local dev only: the JWKS is fetched over plaintext HTTP inside the docker
+      # network. Production does not apply this overlay, so it fails closed and
+      # requires https for AUTH_SERVER_URL.
+      ALLOW_INSECURE_AUTH_SERVER: "true"

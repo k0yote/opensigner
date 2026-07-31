@@ -5,7 +5,7 @@ class Openfort {
     accessToken = undefined,
     thirdPartyProvider = undefined,
     thirdPartyTokenType = undefined,
-    hotStorageURL = "http://localhost:7052",
+    hotStorageURL = "http://localhost:7054",
   ) {
     this._publishableKey = publishableKey;
     this._accessToken = accessToken;
@@ -96,24 +96,6 @@ class Openfort {
     );
   }
 
-  async disable(account, requestId = null) {
-    return await this._makeRequest(
-      "POST",
-      `/v1/accounts/${account}/disable`,
-      {},
-      requestId,
-    );
-  }
-
-  async exported(address, requestId = null) {
-    return await this._makeRequest(
-      "POST",
-      "/v1/devices/exported",
-      { address },
-      requestId,
-    );
-  }
-
   async getDevice(deviceID, requestId = null) {
     return await this._makeRequest(
       "GET",
@@ -132,47 +114,6 @@ class Openfort {
     return await this._makeRequest("GET", endpoint, null, requestId);
   }
 
-  async getAccount(accountId, requestId = null) {
-    return await this._makeRequest(
-      "GET",
-      `/v2/accounts/${accountId}`,
-      null,
-      requestId,
-    );
-  }
-
-  async createAccount(accountData, requestId = null) {
-    return await this._makeRequest(
-      "POST",
-      "/v2/accounts",
-      accountData,
-      requestId,
-    );
-  }
-
-  async listSigners(accountId = null, signerType = null, requestId = null) {
-    let endpoint = "/v2/signers";
-    const params = new URLSearchParams();
-
-    if (accountId) params.append("account", accountId);
-    if (signerType) params.append("signerType", signerType);
-
-    if (params.toString()) {
-      endpoint += `?${params.toString()}`;
-    }
-
-    return await this._makeRequest("GET", endpoint, null, requestId);
-  }
-
-  async createSigner(signerData, requestId = null) {
-    return await this._makeRequest(
-      "POST",
-      "/v2/signers",
-      signerData,
-      requestId,
-    );
-  }
-
   async getShamirDevice(deviceId, requestId = null) {
     return await this._makeRequest(
       "GET",
@@ -187,15 +128,6 @@ class Openfort {
       "POST",
       `/v1/devices/register`,
       deviceData,
-      requestId,
-    );
-  }
-
-  async exportShamirSigner(address, requestId = null) {
-    return await this._makeRequest(
-      "POST",
-      `/v1/devices/exported`,
-      { address },
       requestId,
     );
   }

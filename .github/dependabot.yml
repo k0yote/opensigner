@@ -1,0 +1,63 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /auth_service
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      auth-service-deps:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /docs
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      docs-deps:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: gomod
+    directory: /hot_storage/sample
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      go-deps:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directories:
+      - /auth_service
+      - /hot_storage
+      - /docs
+      - /iframe/sample
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  # Covers the digest-pinned images referenced only by docker-compose.yml
+  # (iframe, shield, postgres), which the Dockerfile entries above never see.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

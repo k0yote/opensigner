@@ -73,10 +73,23 @@ git clone https://github.com/openfort-xyz/opensigner.git
 cd opensigner
 ```
 
+Configure the required secrets. Compose has no defaults for these and refuses to
+start without them, so a deployment cannot silently come up on credentials that are
+published in this repository:
+
+```bash
+cp .env.example .env
+# then fill in every REQUIRED value; each has a generator command in the comments
+```
+
+> **Set the database passwords before the first start.** PostgreSQL fixes its
+> passwords when the data volume is first created, so changing them later does
+> not update an existing volume.
+
 Build the project:
 
 ```bash
-make clean build
+make build
 ```
 
 Run the full stack locally:
@@ -84,6 +97,10 @@ Run the full stack locally:
 ```bash
 make run
 ```
+
+> `make clean` is **destructive**: it runs `docker compose down --rmi all -v`, and
+> the `-v` deletes the volume, wiping the databases. To stop the stack while
+> keeping your data, use `docker compose down`.
 
 Services exposed by default:
 
@@ -94,16 +111,16 @@ Services exposed by default:
 - `7054`: hot storage
 - `7055`: docs (run with `make docs`)
 
-To start a subset of services (for example if you already have a DB or auth), remove services from the `docker-compose` command:
+To start a subset of services (for example if you already have a DB or auth), remove services from the `docker compose` command:
 
 ```bash
-docker-compose up postgres mysql auth_service iframe iframe-sample hot_storage cold_storage docs
+docker compose up postgres auth_service iframe iframe-sample hot_storage cold_storage docs
 ```
 
-We also provide `docker-compose.map.db.ports.yml` to map the internal Postgres and MySQL ports to host ports `7056` and `7057`:
+We also provide `docker-compose.map.db.ports.yml` to map the internal Postgres port to host port `7056`:
 
 ```bash
-docker-compose -f docker-compose.yml -f docker-compose.map.db.ports.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.map.db.ports.yml up --build
 ```
 
 For configuration details, see [`docker-compose.yml`](docker-compose.yml) and the docs.

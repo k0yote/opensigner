@@ -4,8 +4,13 @@
   "outputDirectory": "dist",
   "redirects": [
     {
-      "source": "/docs/security",
-      "destination": "/docs/security/overview",
+      "source": "/security",
+      "destination": "/security/overview",
+      "permanent": true
+    },
+    {
+      "source": "/docs/:path*",
+      "destination": "/:path*",
       "permanent": true
     },
     {

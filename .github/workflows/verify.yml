@@ -1,0 +1,322 @@
+name: Verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege by default; jobs opt in to more only if they need it.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: Node (auth_service, docs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
+        with:
+          version: 10.28.2
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Install auth_service dependencies
+        working-directory: auth_service
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck auth_service
+        working-directory: auth_service
+        run: pnpm exec tsc --noEmit
+
+      - name: Test auth_service
+        working-directory: auth_service
+        run: pnpm test
+
+      - name: Build auth_service
+        working-directory: auth_service
+        run: pnpm build
+
+      - name: Lint and format check auth_service
+        working-directory: auth_service
+        run: pnpm exec biome check .
+
+      # --prod scopes this to what actually ships. The migration CLI is a
+      # devDependency confined to its own build stage and never reaches the
+      # runtime image, so its advisories would otherwise fail this job for code
+      # that is not deployed.
+      - name: Audit auth_service runtime dependencies
+        working-directory: auth_service
+        run: pnpm audit --prod --audit-level=low
+
+      - name: Audit auth_service dev dependencies (non-blocking)
+        working-directory: auth_service
+        continue-on-error: true
+        run: pnpm audit --audit-level=high
+
+      - name: Install docs dependencies
+        working-directory: docs
+        run: pnpm install --frozen-lockfile
+
+      # The docs build typechecks first and then runs the SEO and page-weight
+      # guardrails against real output. d2 is needed for the diagram step; the
+      # install script owns the pinned version and checksums.
+      - name: Install d2
+        run: |
+          ./docs/scripts/install-d2.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build docs (includes typecheck, sitemap and page-weight checks)
+        working-directory: docs
+        run: pnpm run build
+
+      # Non-blocking: docs dependencies never reach a runtime -- the site is
+      # prerendered and served by nginx -- so advisories are surfaced here but
+      # do not gate merges.
+      - name: Audit docs dependencies (non-blocking)
+        working-directory: docs
+        continue-on-error: true
+        run: pnpm audit --audit-level=high
+
+  go:
+    name: Go (hot_storage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: hot_storage/sample/go.mod
+          cache-dependency-path: hot_storage/sample/go.sum
+
+      - name: Check formatting
+        working-directory: hot_storage/sample
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt found unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        working-directory: hot_storage/sample
+        run: go vet ./...
+
+      - name: Build
+        working-directory: hot_storage/sample
+        run: go build ./...
+
+      - name: Test
+        working-directory: hot_storage/sample
+        run: go test -race ./...
+
+      - name: Vulnerability scan
+        working-directory: hot_storage/sample
+        # govulncheck has no native allowlist, so known-unfixable findings are
+        # filtered by ID here. Each entry must state why it cannot be fixed yet,
+        # and anything not listed fails the job.
+        #
+        #   GO-2026-5856  crypto/tls Encrypted Client Hello privacy leak.
+        #                 Fixed in go1.25.12; no golang:1.25.12-alpine image is
+        #                 published yet. Remove this entry once one exists.
+        env:
+          ALLOWLIST: GO-2026-5856
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+
+          # JSON mode exits 0 whenever the scan itself succeeds; any other exit
+          # means the scanner failed and the run proves nothing.
+          if ! "$(go env GOPATH)/bin/govulncheck" -format json ./... > govulncheck.json; then
+            echo "::error::govulncheck failed to run; treating as a failed scan"
+            exit 1
+          fi
+
+          # Only findings with a resolved call-stack frame are reachable from
+          # this module; OSV entries without one are informational.
+          found="$(jq -r 'select(.finding != null)
+                          | select(.finding.trace[0].function != null)
+                          | .finding.osv' govulncheck.json | sort -u)"
+          rm govulncheck.json
+
+          unexpected=""
+          for id in $found; do
+            case " $ALLOWLIST " in
+              *" $id "*) echo "::notice::$id is allowlisted" ;;
+              *) unexpected="$unexpected $id" ;;
+            esac
+          done
+
+          if [ -n "$unexpected" ]; then
+            echo "::error::unlisted vulnerabilities:$unexpected"
+            exit 1
+          fi
+          echo "No unlisted vulnerabilities."
+
+  shell:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # shellcheck is preinstalled on ubuntu-latest. The non-empty assertion
+      # keeps a future rename from silently emptying the check.
+      - name: ShellCheck
+        run: |
+          files="$(git ls-files '*.sh')"
+          if [ -z "$files" ]; then
+            echo "::error::no shell scripts matched; update this step if they moved"
+            exit 1
+          fi
+          echo "$files" | xargs shellcheck
+
+      - name: Syntax-check sample client JS
+        run: node --check iframe/sample/keys-client.js
+
+  workflows:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+
+      - name: zizmor
+        run: pipx run zizmor==1.28.0 .github/workflows/
+
+  e2e:
+    name: API end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      JWT_SECRET: ci-e2e-placeholder-secret-at-least-32-chars
+      SHARE_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      POSTGRES_PASSWORD: ci-e2e-password
+      AUTH_SERVICE_DB_PASS: ci-e2e-password
+      HOT_STORAGE_DB_PASS: ci-e2e-password
+      COLD_STORAGE_DB_PASS: ci-e2e-password
+      BETTER_AUTH_BASE_URL: http://localhost:7052
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
+        with:
+          version: 10.28.2
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Install newman
+        run: pnpm install --frozen-lockfile
+
+      # The dev overlay disables DB TLS: the stock postgres image ships without
+      # certificates, and DB TLS is not what this job verifies.
+      - name: Start auth and hot storage
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+            up -d --build postgres auth_service hot_storage
+
+      - name: Wait for services
+        run: |
+          for url in http://localhost:7052/health http://localhost:7054/health; do
+            for _ in $(seq 1 30); do
+              if curl -fsS "$url" >/dev/null 2>&1; then break; fi
+              sleep 2
+            done
+            curl -fsS "$url" >/dev/null
+          done
+
+      - name: Run API suite
+        run: |
+          pnpm exec newman run docs/public/postman/keys.json \
+            --env-var auth_server=http://localhost:7052 \
+            --env-var hot_storage_server=http://localhost:7054 \
+            --env-var origin=http://localhost:7051 \
+            --env-var chainId=80002 \
+            --env-var address="0xe2e$(printf '%037d' "$GITHUB_RUN_ID")" \
+            --env-var email="e2e-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT@example.com" \
+            --env-var username="e2e$GITHUB_RUN_ID$GITHUB_RUN_ATTEMPT" \
+            --env-var displayname="CI E2E" \
+            --env-var password="a-strong-ci-password-123"
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --tail 100
+
+  compose:
+    name: Compose config
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Placeholders purely so interpolation resolves. The required variables
+      # have no defaults by design, so compose refuses to start without them.
+      - name: Validate docker-compose
+        env:
+          JWT_SECRET: ci-placeholder-secret-at-least-32-characters-long
+          SHARE_ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+          POSTGRES_PASSWORD: ci-placeholder
+          AUTH_SERVICE_DB_PASS: ci-placeholder
+          HOT_STORAGE_DB_PASS: ci-placeholder
+          COLD_STORAGE_DB_PASS: ci-placeholder
+        run: |
+          docker compose -f docker-compose.yml config >/dev/null
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml config >/dev/null
+
+      - name: Assert required secrets have no defaults
+        run: |
+          # Unset environment must fail: a missing credential should stop the
+          # stack rather than fall back to a weak default. The failure must be
+          # the :? guard itself, not an unrelated compose error.
+          set +e
+          output="$(docker compose -f docker-compose.yml config 2>&1 >/dev/null)"
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "ERROR: compose resolved with no credentials set; :? guards are missing"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "must be set"; then
+            echo "ERROR: compose failed, but not on a missing-credential guard:"
+            echo "$output"
+            exit 1
+          fi
+          echo "OK: compose refuses to resolve without required secrets"

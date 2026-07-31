@@ -1,6 +1,6 @@
 ---
 title: Shield component
-description: Explore the OpenSigner Shield cold storage component built in Go with MySQL, supporting password, passkey, and automatic recovery with OTP for key shares.
+description: Explore the OpenSigner Shield cold storage component built in Go with PostgreSQL, supporting password, passkey, and automatic recovery with OTP for key shares.
 ---
 
 import { JsonLd, techArticle } from '../../lib/jsonld';
@@ -21,7 +21,7 @@ There are a couple of exceptions for this: handling project and authentication p
 
 In any case, the API specifics can be found in [Shield's official repository](https://github.com/openfort-xyz/shield) `README.md`.
 
-Shield is fully written in Go and it relies on a MySQL-compatible database for its persistence layer.
+Shield is fully written in Go and it relies on a PostgreSQL database for its persistence layer.
 
 All database interactions are done using Go's ORM, `gorm`. Database migrations are done via `goose`.
 
@@ -56,7 +56,7 @@ Shield also features mock entity repositories. This allows anyone to run shield'
 
 ## Prerequisites
 
-Shield requires a MySQL-compatible database. **Shield uses MariaDB for development.** Configure the following environment variables
+Shield requires a PostgreSQL database. Configure the following environment variables
 
 ```
 # DB related fields, those do NOT have a default value
@@ -65,6 +65,10 @@ DB_PORT=
 DB_USER=
 DB_PASS=
 DB_NAME=
+# TLS mode for the database connection. Note the underscore: Shield reads
+# DB_SSL_MODE and defaults it to `disable`, so a misspelled name yields an
+# unencrypted connection rather than an error. Set `require` in production.
+DB_SSL_MODE=
 # URL to the hot storage, used as base URL for API
 OPENFORT_BASE_URL=
 # Shield's port, default is 8080
@@ -87,15 +91,34 @@ CORS_EXTRA_ALLOWED_HEADERS=
 
 ## Versioning
 
-The provided `docker-compose.yml` pins Shield to a specific release image. The current version is `v0.2.40`:
+The provided `docker-compose.yml` pins Shield to a specific release image. The current version is `v0.3.2`:
 
 ```yaml
-image: ghcr.io/openfort-xyz/shield:v0.2.40
+image: ghcr.io/openfort-xyz/shield:v0.3.2
 ```
+
+Shield dropped MySQL support in `v0.3.0` and speaks only the PostgreSQL wire
+protocol from that release on. Earlier tags such as `v0.2.40` expect MySQL and
+will not start against the database this stack provides.
 
 Shield images are published to the GitHub Container Registry under `ghcr.io/openfort-xyz/shield`. To check for newer versions, visit the [Shield repository releases](https://github.com/openfort-xyz/shield/releases) or list available tags in the registry.
 
 When upgrading, review the release notes for breaking changes before updating the tag in your `docker-compose.yml`. After updating, restart the container — Shield automatically applies any pending database migrations on startup.
+
+:::warning[Shield creates its tables, not its database]
+Those migrations run *inside* `DB_NAME`; Shield does not create that database.
+`postgres/init.sql` creates it, but PostgreSQL only runs that script when it
+initialises a **fresh** data directory. On a volume that predates this stack's
+move to PostgreSQL the database is absent, and cold storage will restart-loop
+until it is created by hand:
+
+```bash
+docker exec ofpostgres psql -U postgres -c 'CREATE DATABASE shield;'
+```
+
+Key shares held in a pre-`v0.3.0` MySQL deployment are not carried over by this
+change; there is no migration path between the two engines.
+:::
 
 ## Deployment
 
@@ -201,9 +224,98 @@ Shield stores the encrypted contents of the cold share along with the internal p
 By *internal passkey ID* we mean the identifier the passkey authenticator gave to that particular passkey.
 OpenSigner also stores the environment in which the passkey was created. This information is mainly extracted from the `User-Agent` token and is meant for both hinting and tracking purposes.
 
+## API error codes
+
+Shield returns an HTTP status, an error code, and a descriptive message on
+failure:
+
+```json
+{
+  "message": "Error description",
+  "code": "ERROR_CODE"
+}
+```
+
+### OTP errors
+
+| HTTP Status | Error Code | Message |
+|-------------|------------|---------|
+| 429 | `OTP_RATE_LIMIT` | Rate limit exceeded to generate OTP |
+| 422 | `OTP_EXPIRED` | OTP is expired |
+| 400 | `OTP_INVALIDATED` | OTP invalidated after max failed attempts |
+| 400 | `OTP_INVALID` | Received otp is invalid |
+| 400 | `OTP_REQUESTED_BUT_NOT_SENT` | OTP was requested but not sent |
+| 428 | `OTP_MISSING` | OTP is required for this request |
+| 404 | `OTP_RECORD_NOT_FOUND` | OTP record not found for user |
+| 400 | `OTP_USER_INFO_MISSING` | Missing user information like email or phone number |
+| 400 | `OTP_NOT_SUPPORTED` | Project doesn't support OTP |
+| 409 | `OTP_ALREADY_ENABLED` | Project already has OTP enabled |
+
+### Project errors
+
+| HTTP Status | Error Code | Message |
+|-------------|------------|---------|
+| 404 | `PJ_NOT_FOUND` | Project not found |
+| 409 | `EC_EXISTS` | Encryption part already exists |
+| 409 | `EC_MISSING` | The requested share have project entropy and encryption part is required |
+| 400 | `EC_INVALID` | Invalid encryption part |
+| 400 | `EC_INVALID` | Invalid encryption session |
+
+### Share errors
+
+| HTTP Status | Error Code | Message |
+|-------------|------------|---------|
+| 404 | `SH_NOT_FOUND` | Share not found |
+| 409 | `SH_EXISTS` | Share already exists |
+
+### User errors
+
+| HTTP Status | Error Code | Message |
+|-------------|------------|---------|
+| 404 | `US_NOT_FOUND` | User not found |
+| 404 | `US_EXT_NOT_FOUND` | External user not found |
+| 409 | `US_EXT_EXISTS` | External user already exists |
+| 400 | `USER_CONTACTS_MISMATCH` | User contact information mismatch |
+| 400 | `EMAIL_INVALID` | Provided Email is invalid |
+| 400 | `PHONE_INVALID` | Provided phone number is invalid |
+
+### Provider errors
+
+| HTTP Status | Error Code | Message |
+|-------------|------------|---------|
+| 400 | `PV_UNKNOWN` | Unknown provider type |
+| 400 | `PV_MISSING` | Missing provider |
+| 404 | `PV_NOT_FOUND` | Provider not found |
+| 400 | `PV_CFG_INVALID` | Invalid provider config |
+| 400 | `PV_CFG_INVALID` | Missing key type |
+| 400 | `PV_CFG_INVALID` | Invalid PEM certificate |
+| 409 | `PV_CFG_INVALID` | JWK and PEM cannot be set at the same time |
+| 409 | `PV_EXISTS` | Custom authentication already registered for this project |
+
+### Authentication errors
+
+| HTTP Status | Error Code | Message |
+|-------------|------------|---------|
+| 401 | `A_MISSING` | Missing API key |
+| 401 | `A_MISSING` | Missing API secret |
+| 401 | `A_MISSING` | Missing token |
+| 401 | `A_MISSING` | Missing auth provider |
+| 401 | `A_INVALID` | Invalid API key or API secret |
+| 401 | `A_INVALID` | Invalid token |
+| 401 | `A_INVALID` | Invalid auth provider |
+
+### General errors
+
+| HTTP Status | Error Code | Message |
+|-------------|------------|---------|
+| 500 | `INTERNAL` | Internal error |
+| 500 | `MISSING_NOTIFICATION_SERV` | Missing notification service |
+| 400 | `BAD_REQUEST` | Various messages |
+
 ## Related
+
 
 - See how [users and projects](/introduction/users) authenticate against Shield.
 - Automatic recovery can require [OTP](/components/cold_storage/otp); compare options in [Recovery methods](/security/recovery-methods).
 
-<JsonLd data={techArticle({ headline: 'Shield component', description: 'Explore the OpenSigner Shield cold storage component built in Go with MySQL, supporting password, passkey, and automatic recovery with OTP for key shares.', path: '/components/shield' })} />
+<JsonLd data={techArticle({ headline: 'Shield component', description: 'Explore the OpenSigner Shield cold storage component built in Go with PostgreSQL, supporting password, passkey, and automatic recovery with OTP for key shares.', path: '/components/shield' })} />

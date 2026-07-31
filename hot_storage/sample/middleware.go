@@ -16,7 +16,12 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-auth-provider, x-request-id, x-player-token, x-cookie-field")
+		// Every header a client sends must be listed here, or the preflight fails
+		// and the browser reports an opaque network error. The official iframe
+		// client sends traceparent and the x-openfort-* tracing headers;
+		// x-token-type accompanies third-party provider tokens.
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-auth-provider, x-request-id, x-player-token, x-cookie-field, "+
+			"x-token-type, traceparent, x-openfort-user-id, x-openfort-chain-id, x-openfort-flow-name")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		w.Header().Set("Vary", "Origin")
 		if r.Method == "OPTIONS" {
@@ -47,10 +52,6 @@ func isOriginAllowed(origin string, allowed []string) bool {
 	return false
 }
 
-// TODO(security): Add per-user rate limiting middleware before production deployment.
-// Recommended: golang.org/x/time/rate with a TokenBucket per userId (e.g., 10 req/sec burst 20).
-// Critical endpoints: /v2/devices/create, /v1/devices/register
-// Without rate limiting, authenticated users can create unbounded devices/accounts.
 func authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		userId, authProvider, err := validateAuth(r)

@@ -2,27 +2,31 @@
   "name": "docs",
   "private": true,
   "version": "0.0.1",
+  "packageManager": "pnpm@10.28.2",
   "type": "module",
   "scripts": {
-    "build": "pnpm run diagrams && vocs build && node ./scripts/inject-seo-head.mjs",
+    "build": "pnpm run diagrams && pnpm run check:types && vocs build && node ./scripts/inject-seo-head.mjs && node ./scripts/generate-seo-files.mjs && node ./scripts/check-sitemap.mjs && node ./scripts/check-page-weight.mjs",
     "dev": "vocs dev",
     "diagrams": "./diagrams/gen.sh",
     "preview": "vocs preview",
-    "install:d2": "curl -fsSL https://d2lang.com/install.sh | sh -s --"
+    "install:d2": "./scripts/install-d2.sh",
+    "check:types": "tsc --noEmit",
+    "seo": "node ./scripts/generate-seo-files.mjs",
+    "check:sitemap": "node ./scripts/check-sitemap.mjs",
+    "check:weight": "node ./scripts/check-page-weight.mjs"
   },
   "dependencies": {
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "swagger-ui-react": "^5.26.0",
-    "vocs": "^2.0.4",
-    "waku": "^1.0.0-beta.0"
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "vocs": "2.7.2",
+    "waku": "1.0.0-beta.0"
   },
   "devDependencies": {
-    "@types/node": "^22.15.3",
-    "@types/react": "^19.1.0",
-    "@types/react-dom": "^19.1.0",
-    "@vitejs/plugin-react": "^6.0.2",
-    "typescript": "^5.8.3",
-    "vite": "^8.0.0"
+    "@types/node": "24.13.3",
+    "@types/react": "19.1.0",
+    "@types/react-dom": "19.1.0",
+    "@vitejs/plugin-react": "6.0.2",
+    "typescript": "5.8.3",
+    "vite": "8.0.0"
   }
 }

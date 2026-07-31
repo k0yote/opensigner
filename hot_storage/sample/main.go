@@ -8,8 +8,8 @@ import (
 )
 
 func main() {
-	if authServerURL == "" {
-		fmt.Println("AUTH_SERVER_URL environment variable is not set")
+	if err := validateConfig(); err != nil {
+		fmt.Printf("invalid configuration: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -25,6 +25,15 @@ func main() {
 	}
 
 	slog.Info("DB initialized")
+
+	// Refuse to boot against a share store this release cannot read. Surfacing
+	// the incompatibility at deploy time is recoverable; discovering it as a
+	// decrypt failure during wallet recovery is not.
+	if err := assertSharesAreBound(); err != nil {
+		slog.Error(fmt.Sprintf("startup check failed: %v", err))
+		os.Exit(1)
+	}
+
 	host := os.Getenv("HOST")
 	port := os.Getenv("PORT")
 	if port == "" {

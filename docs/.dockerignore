@@ -1,0 +1,19 @@
+# Copying a host-built node_modules into the image makes pnpm try to purge and
+# reinstall it, which needs a TTY and fails the build. It is also a gigabyte of
+# platform-specific binaries the image resolves for itself.
+node_modules/
+
+# Build output is produced inside the image.
+dist/
+.vocs/
+
+# Generated during the build from the d2 sources.
+public/diagrams/
+public/sitemap.xml
+public/robots.txt
+
+# Generated route manifest.
+src/pages.gen.ts
+
+pnpm-debug.log*
+.DS_Store
