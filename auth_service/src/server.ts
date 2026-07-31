@@ -32,6 +32,10 @@ const allowedOrigins = process.env["ALLOWED_ORIGINS"]
 // http:// baseURL cannot silently issue cookies without the Secure flag.
 const useSecureCookies = secureCookiesFor(baseURL);
 
+export const databasePool = new Pool({
+  connectionString: dsn,
+});
+
 export const auth = betterAuth({
   baseURL,
   // The secret must be this top-level option; the jwt plugin's options are not
@@ -41,9 +45,7 @@ export const auth = betterAuth({
   advanced: {
     useSecureCookies,
   },
-  database: new Pool({
-    connectionString: dsn,
-  }),
+  database: databasePool,
   plugins: [
     bearer(),
     jwt(),

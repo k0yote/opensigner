@@ -22,7 +22,6 @@
     "pg": "8.16.3"
   },
   "devDependencies": {
-    "@better-auth/cli": "1.4.21",
     "@biomejs/biome": "2.5.6",
     "@types/cors": "2.8.19",
     "@types/express": "5.0.3",

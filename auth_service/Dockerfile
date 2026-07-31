@@ -22,19 +22,15 @@ COPY . .
 RUN pnpm build
 
 # ---------------------------------------------------------------------------
-# Migration stage. The schema tool is a devDependency and needs the TypeScript
-# config file, so it lives here rather than in the image that serves traffic:
-# its dependency tree is large and carries advisories of its own, none of which
-# belong in a process handling requests.
-#
-# @better-auth/cli is pinned at 1.4.21 (the latest stable) while the app runs
-# better-auth 1.6.25; the CLI bundles its own core, whose table schema matches
-# 1.6.25's. Re-verify that match whenever better-auth is bumped.
+# Migration stage. The compiled migration entry point calls the migration API
+# exported by the same better-auth package that serves traffic. Keeping one
+# package version prevents a separately versioned CLI from deriving a different
+# schema than the runtime expects.
 FROM builder AS migrate
 
 ENV NODE_ENV=production
 
-ENTRYPOINT ["pnpm", "exec", "better-auth", "migrate", "--config", "src/server.ts", "--yes"]
+ENTRYPOINT ["node", "dist/migrate.js"]
 
 # ---------------------------------------------------------------------------
 # Runtime: production dependencies only.
