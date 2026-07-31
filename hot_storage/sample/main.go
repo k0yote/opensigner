@@ -8,13 +8,10 @@ import (
 	"log/slog"
 )
 
-// migrateShares is set by -migrate-shares. It re-wraps stored shares so each is
-// bound to its device row, then exits without serving traffic.
-var migrateShares bool
-
 func main() {
-	flag.BoolVar(&migrateShares, "migrate-shares", false,
-		"re-wrap stored shares so each is bound to its device row, then exit")
+	// No flags are defined. Parsing exists so that an unrecognised argument -- a
+	// stale runbook still invoking the removed -migrate-shares, say -- exits with
+	// a clear error instead of silently starting a server that was not asked for.
 	flag.Parse()
 
 	if err := validateConfig(); err != nil {
@@ -34,16 +31,6 @@ func main() {
 	}
 
 	slog.Info("DB initialized")
-
-	// Operator-invoked rather than automatic: it rewrites every device row, and
-	// the result is only readable by a binary that understands the bound format.
-	if migrateShares {
-		if err := migrateSharesToBound(); err != nil {
-			slog.Error(fmt.Sprintf("share migration failed: %v", err))
-			os.Exit(1)
-		}
-		return
-	}
 
 	host := os.Getenv("HOST")
 	port := os.Getenv("PORT")

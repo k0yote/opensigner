@@ -66,14 +66,14 @@ func TestDecryptShareRejectsTamperedCiphertext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encrypt failed: %v", err)
 	}
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(ciphertext, boundSharePrefix))
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(ciphertext, sharePrefix))
 	if err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
 
 	// Flip a bit in the final byte; GCM must reject it rather than return garbage.
 	raw[len(raw)-1] ^= 0x01
-	if _, err := decryptShare(boundSharePrefix+base64.StdEncoding.EncodeToString(raw), "device-1"); err == nil {
+	if _, err := decryptShare(sharePrefix+base64.StdEncoding.EncodeToString(raw), "device-1"); err == nil {
 		t.Fatal("expected tampered ciphertext to fail authentication")
 	}
 }
@@ -164,28 +164,52 @@ func TestShareIsBoundToItsDevice(t *testing.T) {
 	}
 }
 
-func TestLegacyUnboundSharesRemainReadable(t *testing.T) {
+func TestUnboundSharesAreRejected(t *testing.T) {
 	withTestKey(t)
 
-	// Simulates a row written before binding existed: no prefix, no AAD. These
-	// must still decrypt, or deploying the change would strand every stored share.
+	// A value written without binding -- no prefix, no AAD -- is not a supported
+	// format. Accepting one would reinstate the weakness binding exists to close:
+	// an unbound ciphertext is valid in any row, so anyone able to write to the
+	// devices table could plant a share taken from a backup and have it decrypted.
 	gcm, err := newGCM()
 	if err != nil {
 		t.Fatalf("gcm failed: %v", err)
 	}
 	nonce := make([]byte, gcm.NonceSize())
-	legacy := base64.StdEncoding.EncodeToString(gcm.Seal(nonce, nonce, []byte("legacy-share"), nil))
+	unbound := base64.StdEncoding.EncodeToString(gcm.Seal(nonce, nonce, []byte("unbound-share"), nil))
 
-	if isBoundShare(legacy) {
-		t.Fatal("a legacy value should not be reported as bound")
+	if _, err := decryptShare(unbound, "any-device-id"); err == nil {
+		t.Fatal("an unbound share decrypted; the bound format must be required")
 	}
+}
 
-	got, err := decryptShare(legacy, "any-device-id")
+func TestDecryptShareRequiresThePrefix(t *testing.T) {
+	withTestKey(t)
+
+	// Sealed with the correct AAD but stored without the prefix. The AEAD alone
+	// would accept this, so only the format check can refuse it -- which is what
+	// keeps a stored value from being anything other than what this code wrote.
+	gcm, err := newGCM()
 	if err != nil {
-		t.Fatalf("legacy share failed to decrypt: %v", err)
+		t.Fatalf("gcm failed: %v", err)
 	}
-	if got != "legacy-share" {
-		t.Fatalf("got %q, want %q", got, "legacy-share")
+	nonce := make([]byte, gcm.NonceSize())
+	sealed := gcm.Seal(nonce, nonce, []byte("a-shamir-share"), shareAAD("device-1"))
+
+	if _, err := decryptShare(base64.StdEncoding.EncodeToString(sealed), "device-1"); err == nil {
+		t.Fatal("a share without the format prefix was accepted")
+	}
+}
+
+func TestDecryptShareRequiresDeviceID(t *testing.T) {
+	withTestKey(t)
+
+	ciphertext, err := encryptShare("a-shamir-share", "device-1")
+	if err != nil {
+		t.Fatalf("encrypt failed: %v", err)
+	}
+	if _, err := decryptShare(ciphertext, ""); err == nil {
+		t.Fatal("expected decryption without a device id to be refused")
 	}
 }
 

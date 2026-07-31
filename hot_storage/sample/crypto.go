@@ -14,10 +14,10 @@ import (
 
 var shareEncryptionKey []byte
 
-// Ciphertexts written with additional authenticated data carry this prefix.
-// Without a marker there is no way to tell a bound ciphertext from an unbound one,
-// and decryption would have to guess which rule to apply.
-const boundSharePrefix = "v2:"
+// Stored ciphertexts carry this prefix. It makes a stored value self-describing,
+// so anything not written by this scheme is refused outright instead of being fed
+// to the AEAD as arbitrary bytes.
+const sharePrefix = "v2:"
 
 func initEncryptionKey() error {
 	keyHex := os.Getenv("SHARE_ENCRYPTION_KEY")
@@ -78,20 +78,20 @@ func encryptShare(plaintext, deviceID string) (string, error) {
 	}
 
 	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), shareAAD(deviceID))
-	return boundSharePrefix + base64.StdEncoding.EncodeToString(ciphertext), nil
+	return sharePrefix + base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
-// decryptShare decrypts a stored share.
+// decryptShare decrypts a stored share, authenticated against deviceID.
 //
-// Values carrying the "v2:" prefix are authenticated against deviceID. Values
-// without it are decrypted unbound; migrateSharesToBound converts them.
+// Binding is unconditional: there is no unbound format to fall back to, so a
+// value that does not carry the prefix is rejected rather than decrypted.
 func decryptShare(encoded, deviceID string) (string, error) {
-	bound := strings.HasPrefix(encoded, boundSharePrefix)
-	if bound {
-		encoded = strings.TrimPrefix(encoded, boundSharePrefix)
-		if deviceID == "" {
-			return "", fmt.Errorf("deviceID is required to decrypt a bound share")
-		}
+	if !strings.HasPrefix(encoded, sharePrefix) {
+		return "", fmt.Errorf("share is not in the bound format")
+	}
+	encoded = strings.TrimPrefix(encoded, sharePrefix)
+	if deviceID == "" {
+		return "", fmt.Errorf("deviceID is required to decrypt a share")
 	}
 
 	data, err := base64.StdEncoding.DecodeString(encoded)
@@ -109,57 +109,11 @@ func decryptShare(encoded, deviceID string) (string, error) {
 		return "", fmt.Errorf("ciphertext too short")
 	}
 
-	var aad []byte
-	if bound {
-		aad = shareAAD(deviceID)
-	}
-
 	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, aad)
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, shareAAD(deviceID))
 	if err != nil {
 		return "", fmt.Errorf("failed to decrypt share: %w", err)
 	}
 
 	return string(plaintext), nil
-}
-
-// isBoundShare reports whether a stored value is already bound to its row.
-func isBoundShare(encoded string) bool {
-	return strings.HasPrefix(encoded, boundSharePrefix)
-}
-
-// migrateSharesToBound re-wraps every unbound share so it is bound to its device.
-//
-// This is a one-way conversion: a re-wrapped share is only readable by a binary
-// that understands the "v2:" prefix, so run it once the deployment is settled.
-func migrateSharesToBound() error {
-	var devices []Device
-	if err := db.Find(&devices).Error; err != nil {
-		return fmt.Errorf("failed to list devices: %w", err)
-	}
-
-	migrated, skipped := 0, 0
-	for _, device := range devices {
-		if isBoundShare(device.Share) {
-			skipped++
-			continue
-		}
-
-		plaintext, err := decryptShare(device.Share, device.ID)
-		if err != nil {
-			return fmt.Errorf("device %s: failed to decrypt existing share: %w", device.ID, err)
-		}
-		rewrapped, err := encryptShare(plaintext, device.ID)
-		if err != nil {
-			return fmt.Errorf("device %s: failed to re-encrypt share: %w", device.ID, err)
-		}
-		if err := db.Model(&Device{}).Where("id = ?", device.ID).
-			Update("share", rewrapped).Error; err != nil {
-			return fmt.Errorf("device %s: failed to store re-encrypted share: %w", device.ID, err)
-		}
-		migrated++
-	}
-
-	fmt.Printf("share migration complete: %d re-wrapped, %d already bound\n", migrated, skipped)
-	return nil
 }
