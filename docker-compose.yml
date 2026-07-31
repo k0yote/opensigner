@@ -140,7 +140,10 @@ services:
       DB_PASS: ${COLD_STORAGE_DB_PASS:?COLD_STORAGE_DB_PASS must be set}
       DB_HOST: ${COLD_STORAGE_DB_HOST:-ofpostgres}
       DB_PORT: ${COLD_STORAGE_DB_PORT:-5432}
-      DB_SSLMODE: ${COLD_STORAGE_DB_SSLMODE:-require}
+      # DB_SSL_MODE, not DB_SSLMODE: shield reads the underscored name and
+      # defaults it to `disable`, so a near-miss here is not a misconfiguration
+      # that surfaces -- it is an unencrypted connection that reports success.
+      DB_SSL_MODE: ${COLD_STORAGE_DB_SSLMODE:-require}
     networks:
       - frontend_network
       - backend_network

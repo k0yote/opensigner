@@ -65,6 +65,10 @@ DB_PORT=
 DB_USER=
 DB_PASS=
 DB_NAME=
+# TLS mode for the database connection. Note the underscore: Shield reads
+# DB_SSL_MODE and defaults it to `disable`, so a misspelled name yields an
+# unencrypted connection rather than an error. Set `require` in production.
+DB_SSL_MODE=
 # URL to the hot storage, used as base URL for API
 OPENFORT_BASE_URL=
 # Shield's port, default is 8080
@@ -87,15 +91,34 @@ CORS_EXTRA_ALLOWED_HEADERS=
 
 ## Versioning
 
-The provided `docker-compose.yml` pins Shield to a specific release image. The current version is `v0.2.40`:
+The provided `docker-compose.yml` pins Shield to a specific release image. The current version is `v0.3.2`:
 
 ```yaml
-image: ghcr.io/openfort-xyz/shield:v0.2.40
+image: ghcr.io/openfort-xyz/shield:v0.3.2
 ```
+
+Shield dropped MySQL support in `v0.3.0` and speaks only the PostgreSQL wire
+protocol from that release on. Earlier tags such as `v0.2.40` expect MySQL and
+will not start against the database this stack provides.
 
 Shield images are published to the GitHub Container Registry under `ghcr.io/openfort-xyz/shield`. To check for newer versions, visit the [Shield repository releases](https://github.com/openfort-xyz/shield/releases) or list available tags in the registry.
 
 When upgrading, review the release notes for breaking changes before updating the tag in your `docker-compose.yml`. After updating, restart the container — Shield automatically applies any pending database migrations on startup.
+
+:::warning[Shield creates its tables, not its database]
+Those migrations run *inside* `DB_NAME`; Shield does not create that database.
+`postgres/init.sql` creates it, but PostgreSQL only runs that script when it
+initialises a **fresh** data directory. On a volume that predates this stack's
+move to PostgreSQL the database is absent, and cold storage will restart-loop
+until it is created by hand:
+
+```bash
+docker exec ofpostgres psql -U postgres -c 'CREATE DATABASE shield;'
+```
+
+Key shares held in a pre-`v0.3.0` MySQL deployment are not carried over by this
+change; there is no migration path between the two engines.
+:::
 
 ## Deployment
 
