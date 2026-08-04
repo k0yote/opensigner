@@ -1,0 +1,72 @@
+name: External links
+
+# Checks external links only. The internal ones belong to tools that understand the
+# routing and run in the docs build: Vocs' `checkDeadlinks` for the page, and
+# `check:anchors` for the `#fragment`.
+#
+# The weekly run exists because link rot is not caused by our commits -- a page we
+# cite goes away on someone else's schedule, and without a scheduled check the first
+# report comes from a reader.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: links-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lychee:
+    name: Lychee
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # The scheduled run opens an issue when a previously good link goes dead.
+      issues: write
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Restore lychee cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .lycheecache
+          key: lychee-${{ github.sha }}
+          restore-keys: lychee-
+
+      # `--preprocess` blanks internal targets before lychee sees them, so a docs
+      # route is not reported as a missing file.
+      - name: Run lychee
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: >-
+            --preprocess docs/scripts/filter-external-links.mjs
+            'docs/src/pages/**/*.mdx'
+            'README.md'
+            '.github/*.md'
+            '*/README.md'
+          fail: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Open issue on scheduled failure
+        if: failure() && github.event_name == 'schedule'
+        uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
+        with:
+          title: "Broken external links detected"
+          content-filepath: ./lychee/out.md
+          labels: docs

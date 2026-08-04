@@ -1,0 +1,42 @@
+# lychee configuration for OpenSigner's docs and repository markdown.
+# Validates external links only; internal ones are checked by tools that know the
+# routing (Vocs' `checkDeadlinks` for the page, `check:anchors` for the fragment).
+# See https://lychee.cli.rs/usage/config/
+
+# Network settings
+max_redirects = 10
+max_concurrency = 16
+timeout = 20
+retry_wait_time = 2
+
+# Some hosts (Cloudflare-protected sites, social networks) reject the default UA.
+user_agent = "Mozilla/5.0 (compatible; opensigner-docs-link-checker/1.0; +https://www.opensigner.dev)"
+
+# Auth-walled or rate-limited statuses still prove the URL resolves.
+accept = ["200..=299", "401", "403", "429"]
+
+exclude_path = [
+  "node_modules",
+  "dist",
+  ".vocs",
+  ".vercel",
+]
+
+exclude = [
+  # Local service endpoints. The docs describe a stack you run yourself, so these
+  # are the addresses a reader is told to open, not links to check.
+  "^https?://localhost",
+  "^https?://127\\.0\\.0\\.1",
+  "^https?://0\\.0\\.0\\.0",
+  "^https?://\\[::1\\]",
+  "^https?://([a-z0-9-]+\\.)*example\\.(com|org|net)",
+  # URLs carrying a template placeholder are request shapes, not addresses.
+  "\\{\\{[^}]+\\}\\}",
+  # SVG xmlns reference, not a real link.
+  "^http://www\\.w3\\.org/2000/svg$",
+]
+
+# Reuse cached results across runs.
+cache = true
+max_cache_age = "1d"
+no_progress = true

@@ -5,7 +5,7 @@
   "packageManager": "pnpm@10.28.2",
   "type": "module",
   "scripts": {
-    "build": "pnpm run diagrams && pnpm run check:types && vocs build && node ./scripts/inject-seo-head.mjs && node ./scripts/generate-seo-files.mjs && node ./scripts/check-sitemap.mjs && node ./scripts/check-page-weight.mjs",
+    "build": "pnpm run diagrams && pnpm run check:types && vocs build && node ./scripts/inject-seo-head.mjs && node ./scripts/generate-seo-files.mjs && node ./scripts/check-sitemap.mjs && node ./scripts/check-anchors.mjs && node ./scripts/check-page-weight.mjs",
     "dev": "vocs dev",
     "diagrams": "./diagrams/gen.sh",
     "preview": "vocs preview",
@@ -13,6 +13,7 @@
     "check:types": "tsc --noEmit",
     "seo": "node ./scripts/generate-seo-files.mjs",
     "check:sitemap": "node ./scripts/check-sitemap.mjs",
+    "check:anchors": "node ./scripts/check-anchors.mjs",
     "check:weight": "node ./scripts/check-page-weight.mjs"
   },
   "dependencies": {

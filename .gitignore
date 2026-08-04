@@ -140,3 +140,6 @@ iframe/iframe
 CLAUDE.md
 # Compiled Go sample binary
 hot_storage/sample/sample
+
+# lychee's external-link result cache
+.lycheecache
