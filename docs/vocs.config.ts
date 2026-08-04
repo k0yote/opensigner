@@ -15,6 +15,10 @@ export default defineConfig({
     OpenApi.from({ spec: './public/swagger/hot_storage.yaml', path: '/apis/hot_storage' }),
     OpenApi.from({ spec: './public/swagger/cold_storage.yaml', path: '/apis/cold_storage' }),
   ],
+  // Fails the build on a link to a page that does not exist. This covers the page
+  // half of an internal link only -- the `#fragment` half is checked separately by
+  // scripts/check-anchors.mjs, which resolves it against the rendered HTML.
+  checkDeadlinks: true,
   title: 'OpenSigner | Non-Custodial Wallet Key Management',
   titleTemplate: '%s – OpenSigner',
   description: 'Open-source, non-custodial, self-hostable private key management.',

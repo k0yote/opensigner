@@ -1,0 +1,41 @@
+name: Docs route guard
+
+# Runs separately from Verify so a removed page without a redirect is reported as
+# its own failing check rather than being buried in a build log.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions: {}
+
+concurrency:
+  group: docs-route-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  removed-routes:
+    name: Removed routes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # The guard diffs the pull request against its merge base, which needs
+          # full history.
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Check removed docs routes
+        run: node docs/scripts/check-removed-routes.mjs
+        env:
+          DOCS_ROUTE_GUARD_BASE: origin/${{ github.event.pull_request.base.ref }}
+          DOCS_REMOVAL_OK: ${{ contains(github.event.pull_request.labels.*.name, 'docs-removal-ok') }}

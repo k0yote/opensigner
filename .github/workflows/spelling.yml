@@ -1,0 +1,47 @@
+name: Spelling
+
+# Misspellings in prose are the defects readers notice and maintainers stop seeing.
+# reviewdog reports them as review comments on the lines that introduced them, so a
+# fix is a suggestion to accept rather than a hunt through a log.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: spelling-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  misspell:
+    name: misspell
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # reviewdog posts its findings as pull request review comments.
+      pull-requests: write
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: misspell
+        uses: reviewdog/action-misspell@d6429416b12b09b4e2768307d53bef58d172e962 # v1.27.0
+        with:
+          github_token: ${{ secrets.github_token }}
+          locale: US
+          reporter: github-pr-review
+          level: error
+          exclude: |
+            ./.git/*
+            *.css
+            *.svg
+            *.yml
+            *.yaml
+            **/package.json
+            **/pnpm-lock.yaml
+            **/go.sum
