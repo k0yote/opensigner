@@ -34,6 +34,9 @@ exclude = [
   "\\{\\{[^}]+\\}\\}",
   # SVG xmlns reference, not a real link.
   "^http://www\\.w3\\.org/2000/svg$",
+  # Referenced by components/iframe and security/recovery-methods, and currently
+  # 404s for readers. Remove this entry once the repository is public.
+  "^https://github\\.com/openfort-xyz/crypto-js$",
 ]
 
 # Reuse cached results across runs.
