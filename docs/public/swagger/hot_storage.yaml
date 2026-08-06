@@ -2,6 +2,38 @@ openapi: 3.0.0
 info:
   title: Openfort Hot Storage API
   version: 1.0.0
+  description: |
+    Stores the "hot" key share for a signer's devices and accounts.
+
+    ## Authentication
+
+    Every endpoint in this document requires a bearer token. The whole API mux is
+    wrapped in `authMiddleware`, which rejects any request it cannot resolve to a
+    user with 401 before the handler runs. There are no anonymous endpoints here;
+    `/health` is served outside this API surface and is not documented below.
+
+    The token is validated according to the `X-Auth-Provider` header. When that
+    header is absent the default provider is used and the token is verified
+    against the auth service's JWKS; other providers verify third-party tokens.
+
+servers:
+  - url: http://localhost:7054
+    description: Local development (docker-compose)
+  - url: "{scheme}://{host}"
+    description: |
+      Self-hosted deployment. OpenSigner has no canonical hosted instance;
+      substitute the host you deploy hot storage to.
+    variables:
+      scheme:
+        default: https
+        enum: [https, http]
+      host:
+        default: hot-storage.example.com
+
+# Applies to every operation. No endpoint in this document is anonymous, so no
+# operation overrides this with `security: []`.
+security:
+  - bearerAuth: []
 
 tags:
   - name: Devices
@@ -25,6 +57,7 @@ paths:
 
         By default, a maximum of 10 accounts are shown per page.
       parameters:
+        - $ref: '#/components/parameters/AuthProvider'
         - name: limit
           in: query
           description: Specifies the maximum number of records to return.
@@ -101,6 +134,8 @@ paths:
       summary: Recover an embedded device
       description: Recovers an embedded device for an existing account. This endpoint retrieves the device information including the share and signer details for a previously registered account.
       operationId: recoverDevice
+      parameters:
+        - $ref: '#/components/parameters/AuthProvider'
       requestBody:
         required: true
         content:
@@ -134,6 +169,8 @@ paths:
       summary: Register an embedded device
       description: Registers a new device for an existing account by associating a share with the account. This is used when adding a new device to an account that already exists.
       operationId: registerDevice
+      parameters:
+        - $ref: '#/components/parameters/AuthProvider'
       requestBody:
         required: true
         content:
@@ -172,6 +209,8 @@ paths:
       summary: Create a new embedded device
       description: Creates a new account and registers the first device for it. This endpoint handles the complete setup of a new account with an embedded signer.
       operationId: createDevice
+      parameters:
+        - $ref: '#/components/parameters/AuthProvider'
       requestBody:
         required: true
         content:
@@ -232,6 +271,7 @@ paths:
       summary: Get the signer for an account
       description: Returns the signer ID associated with an account at the given address for the authenticated user.
       parameters:
+        - $ref: '#/components/parameters/AuthProvider'
         - name: address
           in: query
           description: The blockchain address of the account.
@@ -257,6 +297,8 @@ paths:
     post:
       tags: [Accounts]
       operationId: importShare
+      parameters:
+        - $ref: '#/components/parameters/AuthProvider'
       summary: Import a key share from an external source
       description: Imports a key share during migration from another system. Creates a new account, signer, and device, and records migration metadata. Returns 409 Conflict if an account already exists at the given address.
       requestBody:
@@ -347,6 +389,7 @@ paths:
       summary: Get migration metadata for an account
       description: Returns migration metadata for an account that was imported from an external system. The authenticated user must own the account.
       parameters:
+        - $ref: '#/components/parameters/AuthProvider'
         - name: accountId
           in: query
           description: The account ID to look up migration data for.
@@ -374,6 +417,8 @@ paths:
     post:
       tags: [Devices]
       operationId: initDevice
+      parameters:
+        - $ref: '#/components/parameters/AuthProvider'
       summary: Initialize device registration or recovery
       description: |
         Determines whether a user needs to register a new device or recover an existing one for a given chain.
@@ -410,6 +455,8 @@ paths:
     post:
       tags: [Devices]
       operationId: registerDeviceV1
+      parameters:
+        - $ref: '#/components/parameters/AuthProvider'
       summary: Register a device (v1)
       description: Registers a new device for a user. If no account exists for the user on the given chain and address, a new account is created and the device is marked as primary. Otherwise, the device is added as a secondary device.
       requestBody:
@@ -462,6 +509,7 @@ paths:
         Returns details for a specific device, including its decrypted share.
         Use the special value `primary` as the device ID to retrieve the primary device for the authenticated user.
       parameters:
+        - $ref: '#/components/parameters/AuthProvider'
         - name: deviceId
           in: path
           description: The device ID, or `primary` to get the primary device.
@@ -490,6 +538,7 @@ paths:
       summary: List devices for the authenticated user
       description: Returns a paginated list of devices belonging to the authenticated user across all their accounts.
       parameters:
+        - $ref: '#/components/parameters/AuthProvider'
         - name: limit
           in: query
           description: Maximum number of devices to return (default 100, max 100).
@@ -512,7 +561,9 @@ paths:
           description: Too Many Requests - per-user rate limit exceeded. Retry after the interval in the Retry-After header.
     post:
       tags: [Devices]
-      operationId: createDevice
+      operationId: createDeviceV1
+      parameters:
+        - $ref: '#/components/parameters/AuthProvider'
       summary: Create a device for an existing account
       description: Creates a new device and associates it with an existing account. The share is encrypted and stored.
       requestBody:
@@ -561,6 +612,30 @@ paths:
           description: Too Many Requests - per-user rate limit exceeded. Retry after the interval in the Retry-After header.
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT issued by the auth service, sent as `Authorization: Bearer <token>`.
+        Verified against the auth service's JWKS for the default provider, or
+        against the relevant third-party issuer when `X-Auth-Provider` names one.
+
+  parameters:
+    AuthProvider:
+      in: header
+      name: X-Auth-Provider
+      required: false
+      description: |
+        Selects how the bearer token is validated. Omit it to use the default
+        provider, which verifies the token against the auth service's JWKS.
+      schema:
+        type: string
+        maxLength: 64
+        pattern: "^[A-Za-z0-9_.-]+$"
+        example: google
+
   schemas:
     EmbeddedV2Response:
       type: object

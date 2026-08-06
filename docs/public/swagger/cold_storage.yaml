@@ -11,6 +11,20 @@ info:
     url: https://www.openfort.io/
     email: support@openfort.io
 
+servers:
+  - url: http://localhost:7053
+    description: Local development (docker-compose)
+  - url: "{scheme}://{host}"
+    description: |
+      Self-hosted deployment. OpenSigner has no canonical hosted instance;
+      substitute the host you deploy shield to.
+    variables:
+      scheme:
+        default: https
+        enum: [https, http]
+      host:
+        default: shield.example.com
+
 security:
   - ApiKeyAuth: []
   - ApiSecretAuth: []
@@ -25,7 +39,7 @@ paths:
       description: Registers a new share for the authenticated user
       security:
         - BearerAuth: []
-        - ApiKeyAuth: []
+          ApiKeyAuth: []
       parameters:
         - $ref: '#/components/parameters/AuthProvider'
         - $ref: '#/components/parameters/OpenfortProvider'
@@ -56,7 +70,7 @@ paths:
       description: Updates an existing share for the authenticated user
       security:
         - BearerAuth: []
-        - ApiKeyAuth: []
+          ApiKeyAuth: []
       parameters:
         - $ref: '#/components/parameters/AuthProvider'
         - $ref: '#/components/parameters/OpenfortProvider'
@@ -90,7 +104,7 @@ paths:
       description: Retrieves share details for the authenticated user
       security:
         - BearerAuth: []
-        - ApiKeyAuth: []
+          ApiKeyAuth: []
       parameters:
         - $ref: '#/components/parameters/AuthProvider'
         - $ref: '#/components/parameters/OpenfortProvider'
@@ -118,7 +132,7 @@ paths:
       description: Deletes the share for the authenticated user
       security:
         - BearerAuth: []
-        - ApiKeyAuth: []
+          ApiKeyAuth: []
       parameters:
         - $ref: '#/components/parameters/AuthProvider'
         - $ref: '#/components/parameters/OpenfortProvider'
@@ -139,6 +153,7 @@ paths:
     post:
       tags:
         - Projects
+      security: []
       summary: Create Project
       description: Creates a new project with API keys and optional encryption key
       requestBody:
@@ -167,7 +182,7 @@ paths:
       description: Retrieves project details
       security:
         - ApiKeyAuth: []
-        - ApiSecretAuth: []
+          ApiSecretAuth: []
       responses:
         '200':
           description: Project details retrieved successfully
@@ -190,7 +205,7 @@ paths:
       description: Adds authentication providers to the project
       security:
         - ApiKeyAuth: []
-        - ApiSecretAuth: []
+          ApiSecretAuth: []
       requestBody:
         required: true
         content:
@@ -218,7 +233,7 @@ paths:
       description: Retrieves all providers associated with the project
       security:
         - ApiKeyAuth: []
-        - ApiSecretAuth: []
+          ApiSecretAuth: []
       responses:
         '200':
           description: Providers retrieved successfully
@@ -239,7 +254,7 @@ paths:
       description: Retrieves details of a specific provider
       security:
         - ApiKeyAuth: []
-        - ApiSecretAuth: []
+          ApiSecretAuth: []
       parameters:
         - name: provider
           in: path
@@ -268,7 +283,7 @@ paths:
       description: Updates a specific provider's configuration
       security:
         - ApiKeyAuth: []
-        - ApiSecretAuth: []
+          ApiSecretAuth: []
       parameters:
         - name: provider
           in: path
@@ -301,7 +316,7 @@ paths:
       description: Deletes a specific provider from the project
       security:
         - ApiKeyAuth: []
-        - ApiSecretAuth: []
+          ApiSecretAuth: []
       parameters:
         - name: provider
           in: path
@@ -327,7 +342,7 @@ paths:
       description: Encrypts all project shares using the provided encryption part
       security:
         - ApiKeyAuth: []
-        - ApiSecretAuth: []
+          ApiSecretAuth: []
       requestBody:
         required: true
         content:
@@ -350,7 +365,7 @@ paths:
       description: Creates a one-time encryption session for secure operations
       security:
         - ApiKeyAuth: []
-        - ApiSecretAuth: []
+          ApiSecretAuth: []
       requestBody:
         required: true
         content:
@@ -377,7 +392,7 @@ paths:
       description: Generates and registers a new encryption key for the project
       security:
         - ApiKeyAuth: []
-        - ApiSecretAuth: []
+          ApiSecretAuth: []
       responses:
         '200':
           description: Encryption key registered successfully
@@ -398,7 +413,7 @@ paths:
         - Projects
       security:
         - ApiKeyAuth: []
-        - ApiSecretAuth: []
+          ApiSecretAuth: []
       requestBody:
         required: true
         content:

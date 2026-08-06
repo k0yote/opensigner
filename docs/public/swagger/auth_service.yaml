@@ -10,6 +10,34 @@ info:
     a JWKS endpoint, an origin-validation endpoint consumed by the iframe nginx proxy,
     and a health check.
 
+    ## Reading the constraints in this document
+
+    String bounds marked as *documented bounds* describe the range this API is
+    designed to accept; they are not all enforced by server-side validation
+    today. Treat them as the contract a client should keep to, not as a promise
+    that a longer value is rejected.
+
+servers:
+  - url: http://localhost:7052
+    description: Local development (docker-compose)
+  - url: "{scheme}://{host}"
+    description: |
+      Self-hosted deployment. OpenSigner has no canonical hosted instance;
+      substitute the host you deploy the auth service to.
+    variables:
+      scheme:
+        default: https
+        enum: [https, http]
+      host:
+        default: auth.example.com
+
+# Applies to every operation that does not override it. Publicly reachable
+# endpoints carry an explicit `security: []` rather than omitting the key,
+# because an omitted key inherits this requirement instead of clearing it.
+security:
+  - bearerAuth: []
+  - cookieAuth: []
+
 tags:
   - name: Authentication
     description: Sign up, sign in, and sign out with email and password.
@@ -29,7 +57,9 @@ paths:
   /api/auth/sign-up/email:
     post:
       summary: Sign up with email and password
+      operationId: signUpEmail
       tags: [Authentication]
+      security: []
       description: |
         Register a new user with email and password. With the username plugin enabled,
         an optional `username` field is accepted (max 30 characters, `admin` is blocked).
@@ -46,13 +76,27 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "429":
-          description: Too Many Requests - sign-up is rate limited per client address (30/hour).
+          $ref: "#/components/responses/RateLimited30PerHour"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        default:
+          $ref: "#/components/responses/Default"
 
   /api/auth/sign-in/email:
     post:
       summary: Sign in with email and password
+      operationId: signInEmail
       tags: [Authentication]
+      security: []
       requestBody:
         required: true
         content:
@@ -66,32 +110,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
-          description: Invalid credentials
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "429":
-          description: Too Many Requests - credential endpoints are rate limited per client address (sign-in 5/min, sign-up 30/hour).
+          $ref: "#/components/responses/RateLimited5PerMinute"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        default:
+          $ref: "#/components/responses/Default"
 
   /api/auth/sign-in/username:
     post:
       summary: Sign in with username and password
+      operationId: signInUsername
       description: |
         Provided by the username plugin. Behaves like sign-in with email, but
         identifies the user by username.
       tags: [Authentication]
+      security: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [username, password]
-              properties:
-                username:
-                  type: string
-                  example: alice
-                password:
-                  type: string
-                  format: password
+              $ref: "#/components/schemas/UsernameSignInRequest"
       responses:
         "200":
           description: Sign-in successful
@@ -99,23 +147,49 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
-          description: Invalid credentials
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "429":
-          description: Too Many Requests - credential endpoints are rate limited per client address (sign-in 5/min).
+          $ref: "#/components/responses/RateLimited5PerMinute"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        default:
+          $ref: "#/components/responses/Default"
 
   /api/auth/sign-out:
     post:
       summary: Sign out and invalidate session
+      operationId: signOut
       tags: [Authentication]
       description: |
         Invalidate the current session. Requires a session cookie or Bearer token.
-      security:
-        - bearerAuth: []
-        - cookieAuth: []
+
+        This operation takes no request body.
       responses:
         "200":
           description: Signed out successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignOutResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        default:
+          $ref: "#/components/responses/Default"
 
   # ==========================
   # Session Management
@@ -123,12 +197,10 @@ paths:
   /api/auth/get-session:
     get:
       summary: Get the current session
+      operationId: getSession
       tags: [Session]
       description: |
         Return the current user and session. Requires a session cookie or Bearer token.
-      security:
-        - bearerAuth: []
-        - cookieAuth: []
       responses:
         "200":
           description: Current session
@@ -137,31 +209,45 @@ paths:
               schema:
                 $ref: "#/components/schemas/SessionResponse"
         "401":
-          description: Not authenticated
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "429":
-          description: Too Many Requests - credential endpoints are rate limited per client address (sign-in 5/min, sign-up 30/hour).
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        default:
+          $ref: "#/components/responses/Default"
 
   /api/auth/token:
     get:
       summary: Get a JWT access token
+      operationId: getToken
       tags: [Session]
       description: |
         Exchange the current session for a short-lived JWT access token.
         Requires a session cookie or Bearer token.
-      security:
-        - bearerAuth: []
-        - cookieAuth: []
       responses:
         "200":
           description: JWT token
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  token:
-                    type: string
-                    description: JWT access token
+                $ref: "#/components/schemas/TokenResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        default:
+          $ref: "#/components/responses/Default"
 
   # ==========================
   # JWKS
@@ -169,7 +255,9 @@ paths:
   /api/auth/jwks:
     get:
       summary: JSON Web Key Set
+      operationId: getJwks
       tags: [JWKS]
+      security: []
       description: |
         Return the public keys used to verify JWT tokens issued by the auth service.
       responses:
@@ -179,11 +267,19 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JWKSResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        default:
+          $ref: "#/components/responses/Default"
 
   /.well-known/jwks.json:
     get:
       summary: JWKS (well-known alias)
+      operationId: getWellKnownJwks
       tags: [JWKS]
+      security: []
       description: |
         Alias for `/api/auth/jwks`. Used by the hot storage service to validate JWT tokens.
       responses:
@@ -193,6 +289,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JWKSResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        default:
+          $ref: "#/components/responses/Default"
 
   # ==========================
   # Origin Validation
@@ -200,18 +302,22 @@ paths:
   /v1/projects/validate-origin:
     get:
       summary: Validate a request origin
+      operationId: validateOrigin
       tags: [Origin Validation]
+      security: []
       description: |
-        Used by the iframe nginx `auth_request` subrequest. Checks if the `X-Request-Origin`
-        header value is in the configured `ALLOWED_ORIGINS` list. Returns `X-Allowed-Origins`
-        response header on success for CSP `frame-ancestors`.
+        Used by the iframe nginx `auth_request` subrequest. Checks whether the
+        `X-Request-Origin` header value is in the configured `ALLOWED_ORIGINS`
+        list. On success the `X-Allowed-Origins` response header carries the
+        allow-list for CSP `frame-ancestors`.
+
+        A missing or empty `X-Request-Origin` is refused with 403. The endpoint
+        does not substitute a default origin.
+
+        Responses are sent with `res.sendStatus`, so the body is the plain-text
+        status phrase rather than JSON.
       parameters:
-        - in: header
-          name: X-Request-Origin
-          schema:
-            type: string
-          required: false
-          description: The origin to validate. Defaults to `openfort.io` if not provided.
+        - $ref: "#/components/parameters/RequestOrigin"
       responses:
         "200":
           description: Origin is allowed
@@ -219,9 +325,25 @@ paths:
             X-Allowed-Origins:
               schema:
                 type: string
+                maxLength: 8192
+                pattern: "^[^\\x00-\\x1f\\x7f]*$"
               description: Space-separated list of allowed origins
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/StatusPhrase"
         "403":
-          description: Origin is not allowed
+          description: |
+            Origin is not allowed, or the `X-Request-Origin` header was missing
+            or empty.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/StatusPhrase"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        default:
+          $ref: "#/components/responses/Default"
 
   # ==========================
   # Health
@@ -229,18 +351,20 @@ paths:
   /health:
     get:
       summary: Health check
+      operationId: getHealth
       tags: [Health]
+      security: []
       responses:
         "200":
           description: Service is healthy
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: ok
+                $ref: "#/components/schemas/HealthResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        default:
+          $ref: "#/components/responses/Default"
 
 # ==========================
 # Schemas
@@ -257,87 +381,334 @@ components:
       name: better-auth.session_token
       description: Session cookie set by Better Auth.
 
+  parameters:
+    RequestOrigin:
+      in: header
+      name: X-Request-Origin
+      required: true
+      description: |
+        The origin to validate. A missing or empty value is refused with 403.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 2048
+        pattern: "^[^\\x00-\\x1f\\x7f]+$"
+        example: http://localhost:7051
+
+  responses:
+    BadRequest:
+      description: The request was malformed or failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Authentication is missing or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: The caller is authenticated but not permitted to perform this action.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: No resource exists at this path.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RateLimited:
+      description: |
+        Too many requests. Better Auth applies a default budget of 100 requests
+        per 60 seconds per client address across `/api/auth/*`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RateLimited5PerMinute:
+      description: |
+        Too many requests. Sign-in is limited to 5 requests per 60 seconds per
+        client address.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RateLimited30PerHour:
+      description: |
+        Too many requests. Sign-up is limited to 30 requests per hour per client
+        address.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: The service failed to process the request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Default:
+      description: Unexpected error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
   schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      properties:
+        message:
+          type: string
+          description: Human-readable description of the failure.
+          maxLength: 1024
+          pattern: "^[^\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]*$"
+          example: Invalid email or password
+        code:
+          type: string
+          description: Stable machine-readable error identifier.
+          maxLength: 128
+          pattern: "^[A-Za-z0-9_.-]+$"
+          example: INVALID_CREDENTIALS
+
+    StatusPhrase:
+      type: string
+      description: Plain-text HTTP status phrase emitted by `res.sendStatus`.
+      maxLength: 64
+      pattern: "^[A-Za-z ]+$"
+      example: OK
+
+    Email:
+      type: string
+      format: email
+      description: Email address. The 254-character bound is the RFC 5321 maximum.
+      maxLength: 254
+      pattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+      example: user@example.com
+
+    Password:
+      type: string
+      format: password
+      description: |
+        Account password. The bound below is a documented request bound rather
+        than a server-enforced limit.
+      minLength: 1
+      maxLength: 256
+      pattern: "^[^\\x00-\\x1f\\x7f]+$"
+      example: s3cur3P@ss
+
+    Username:
+      type: string
+      description: |
+        Username. The 30-character maximum is enforced by the username plugin
+        (`maxUsernameLength: 30`). The value `admin` is rejected.
+      minLength: 1
+      maxLength: 30
+      pattern: "^[^\\x00-\\x1f\\x7f]+$"
+      example: janedoe
+
+    DisplayName:
+      type: string
+      description: |
+        Human-readable account name. Documented request bound, not enforced by
+        server-side validation.
+      minLength: 1
+      maxLength: 256
+      pattern: "^[^\\x00-\\x1f\\x7f]+$"
+      example: Jane Doe
+
+    Identifier:
+      type: string
+      description: Opaque record identifier issued by Better Auth.
+      minLength: 1
+      maxLength: 128
+      pattern: "^[A-Za-z0-9_-]+$"
+      example: 8k2Jd0aQm4Xw1Zr7
+
+    SessionToken:
+      type: string
+      description: Opaque session token issued by Better Auth.
+      minLength: 1
+      maxLength: 512
+      pattern: "^[A-Za-z0-9._-]+$"
+
+    JwtToken:
+      type: string
+      description: Signed JWT access token in compact serialization.
+      minLength: 1
+      maxLength: 8192
+      pattern: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+
+    Timestamp:
+      type: string
+      format: date-time
+      description: ISO 8601 timestamp.
+      maxLength: 64
+      pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$"
+      example: "2026-08-06T09:00:00.000Z"
+
     SignUpRequest:
       type: object
+      additionalProperties: false
+      required: [email, password, name]
       properties:
         email:
-          type: string
-          format: email
-          example: user@example.com
+          $ref: "#/components/schemas/Email"
         password:
-          type: string
-          example: s3cur3P@ss
+          $ref: "#/components/schemas/Password"
         name:
-          type: string
-          example: Jane Doe
+          $ref: "#/components/schemas/DisplayName"
         username:
-          type: string
-          description: Optional username (max 30 characters, `admin` is blocked).
-          example: janedoe
-      required: [email, password, name]
+          $ref: "#/components/schemas/Username"
 
     SignInRequest:
       type: object
+      additionalProperties: false
+      required: [email, password]
       properties:
         email:
-          type: string
-          format: email
-          example: user@example.com
+          $ref: "#/components/schemas/Email"
         password:
+          $ref: "#/components/schemas/Password"
+
+    UsernameSignInRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          $ref: "#/components/schemas/Username"
+        password:
+          $ref: "#/components/schemas/Password"
+
+    SignOutResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+          example: true
+
+    TokenResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        token:
+          $ref: "#/components/schemas/JwtToken"
+
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
           type: string
-          example: s3cur3P@ss
-      required: [email, password]
+          maxLength: 32
+          pattern: "^[a-z]+$"
+          example: ok
 
     SessionResponse:
       type: object
+      additionalProperties: false
       properties:
         user:
           $ref: "#/components/schemas/User"
         session:
           $ref: "#/components/schemas/Session"
         token:
-          type: string
-          description: Session token (present on sign-up and sign-in responses).
+          $ref: "#/components/schemas/SessionToken"
 
     User:
       type: object
+      additionalProperties: false
       properties:
         id:
-          type: string
+          $ref: "#/components/schemas/Identifier"
         email:
-          type: string
+          $ref: "#/components/schemas/Email"
         name:
-          type: string
+          $ref: "#/components/schemas/DisplayName"
         username:
-          type: string
+          $ref: "#/components/schemas/Username"
         emailVerified:
           type: boolean
         createdAt:
-          type: string
-          format: date-time
+          $ref: "#/components/schemas/Timestamp"
         updatedAt:
-          type: string
-          format: date-time
+          $ref: "#/components/schemas/Timestamp"
 
     Session:
       type: object
+      additionalProperties: false
       properties:
         id:
-          type: string
+          $ref: "#/components/schemas/Identifier"
         userId:
-          type: string
+          $ref: "#/components/schemas/Identifier"
         expiresAt:
-          type: string
-          format: date-time
+          $ref: "#/components/schemas/Timestamp"
         token:
-          type: string
+          $ref: "#/components/schemas/SessionToken"
 
     JWKSResponse:
       type: object
+      additionalProperties: false
       properties:
         keys:
           type: array
+          maxItems: 100
           items:
-            type: object
-            description: A JSON Web Key (JWK).
+            $ref: "#/components/schemas/JsonWebKey"
+
+    JsonWebKey:
+      type: object
+      description: A JSON Web Key (JWK) as published by the JWKS endpoint.
+      additionalProperties: false
+      properties:
+        kid:
+          type: string
+          maxLength: 128
+          pattern: "^[A-Za-z0-9._-]+$"
+        kty:
+          type: string
+          maxLength: 16
+          pattern: "^[A-Za-z0-9]+$"
+          example: OKP
+        alg:
+          type: string
+          maxLength: 16
+          pattern: "^[A-Za-z0-9]+$"
+          example: EdDSA
+        use:
+          type: string
+          maxLength: 16
+          pattern: "^[a-z]+$"
+          example: sig
+        crv:
+          type: string
+          maxLength: 16
+          pattern: "^[A-Za-z0-9-]+$"
+          example: Ed25519
+        x:
+          type: string
+          description: Base64url-encoded public key material.
+          maxLength: 1024
+          pattern: "^[A-Za-z0-9_-]+$"
+        y:
+          type: string
+          description: Base64url-encoded public key material (EC keys).
+          maxLength: 1024
+          pattern: "^[A-Za-z0-9_-]+$"
+        n:
+          type: string
+          description: Base64url-encoded modulus (RSA keys).
+          maxLength: 2048
+          pattern: "^[A-Za-z0-9_-]+$"
+        e:
+          type: string
+          description: Base64url-encoded exponent (RSA keys).
+          maxLength: 64
+          pattern: "^[A-Za-z0-9_-]+$"
