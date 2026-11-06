@@ -288,12 +288,12 @@ func handleListAccountsV2(w http.ResponseWriter, r *http.Request) {
 
 	for _, acc := range accounts {
 		accountsResponse = append(accountsResponse, AccountResponse{
-			ID:       acc.ID,
-			Address:  acc.Address,
-			Username: acc.Username,
-			ChainId:  acc.ChainId,
-			SignerId: acc.SignerId,
-					CreatedAt: acc.CreatedAt.Unix(),
+			ID:        acc.ID,
+			Address:   acc.Address,
+			Username:  acc.Username,
+			ChainId:   acc.ChainId,
+			SignerId:  acc.SignerId,
+			CreatedAt: acc.CreatedAt.Unix(),
 		})
 	}
 
