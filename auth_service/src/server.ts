@@ -24,6 +24,17 @@ const dbsslmode = process.env["DB_SSLMODE"] || "require";
 const dsn = `postgres://${dbuser}:${dbpass}@${dbhost}:${dbport}/${dbname}?sslmode=${dbsslmode}`;
 const baseURL = process.env["BETTER_AUTH_BASE_URL"];
 
+// JWT lifetime. 15 minutes is the library default; stated explicitly so a library change cannot widen it silently.
+const JWT_EXPIRATION = "15m";
+
+// Per-IP sign-in budget per 60 s. 5 is the production default; local development and CI runners
+// (many sign-ins from one address) override it with AUTH_SIGNIN_RATE_MAX.
+const signInRateMax = Number.parseInt(process.env["AUTH_SIGNIN_RATE_MAX"] ?? "5", 10);
+if (!Number.isInteger(signInRateMax) || signInRateMax < 1) {
+  console.error("FATAL: AUTH_SIGNIN_RATE_MAX must be a positive integer");
+  process.exit(1);
+}
+
 const allowedOrigins = process.env["ALLOWED_ORIGINS"]
   ? process.env["ALLOWED_ORIGINS"].split(",")
   : ["http://localhost:7050", "http://localhost:7051"];
@@ -48,7 +59,9 @@ export const auth = betterAuth({
   database: databasePool,
   plugins: [
     bearer(),
-    jwt(),
+    // hot_storage releases a key share to any holder of a valid JWT, so the lifetime is pinned
+    // here instead of relying on the library default (SEC-09 in the demo's policy).
+    jwt({ jwt: { expirationTime: JWT_EXPIRATION } }),
     username({
       maxUsernameLength: 30,
       usernameValidator: (username: string) => {
@@ -70,8 +83,8 @@ export const auth = betterAuth({
     window: 60,
     max: 100,
     customRules: {
-      "/sign-in/email": { window: 60, max: 5 },
-      "/sign-in/username": { window: 60, max: 5 },
+      "/sign-in/email": { window: 60, max: signInRateMax },
+      "/sign-in/username": { window: 60, max: signInRateMax },
       // Per-IP budget shared by everyone behind one address (office NAT, CI
       // runner); too tight locks out legitimate users rather than attackers.
       "/sign-up/email": { window: 3600, max: 30 },
