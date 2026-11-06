@@ -279,7 +279,7 @@ func handleListAccountsV2(w http.ResponseWriter, r *http.Request) {
 
 	var accounts []Account
 	query := db.Where("username = ? AND auth_provider = ?", userId, authProvider)
-	if err := query.Limit(limit).Find(&accounts).Error; err != nil {
+	if err := query.Order("created_at DESC").Limit(limit).Find(&accounts).Error; err != nil {
 		http.Error(w, "failed to select users' accounts", http.StatusInternalServerError)
 		return
 	}
@@ -293,6 +293,7 @@ func handleListAccountsV2(w http.ResponseWriter, r *http.Request) {
 			Username: acc.Username,
 			ChainId:  acc.ChainId,
 			SignerId: acc.SignerId,
+					CreatedAt: acc.CreatedAt.Unix(),
 		})
 	}
 
