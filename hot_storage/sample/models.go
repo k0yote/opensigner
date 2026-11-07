@@ -108,11 +108,12 @@ type DeviceListResponse struct {
 }
 
 type AccountResponse struct {
-	ID       string `gorm:"primaryKey" json:"id"`
-	Address  string `json:"address"`
-	Username string `json:"username"`
-	ChainId  int64  `json:"chainId"`
-	SignerId string `json:"signerId"`
+	ID        string `gorm:"primaryKey" json:"id"`
+	Address   string `json:"address"`
+	Username  string `json:"username"`
+	ChainId   int64  `json:"chainId"`
+	SignerId  string `json:"signerId"`
+	CreatedAt int64  `json:"createdAt"` // unix seconds, newest first in list responses
 }
 
 type AccountListResponse struct {

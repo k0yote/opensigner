@@ -110,6 +110,8 @@ services:
       # service; rate limiting then keys on the address that proxy saw instead
       # of the proxy itself.
       TRUST_PROXY: ${TRUST_PROXY:-false}
+      # Per-IP sign-in attempts per 60 s. Raise only for local development or CI runners.
+      AUTH_SIGNIN_RATE_MAX: ${AUTH_SIGNIN_RATE_MAX:-5}
     networks:
       - frontend_network
       - backend_network
