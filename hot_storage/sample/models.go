@@ -1,6 +1,8 @@
 package main
 
 import (
+	"time"
+
 	"gorm.io/gorm"
 )
 
@@ -58,6 +60,29 @@ type Device struct {
 	Share     string `json:"share"`
 	IsPrimary bool   `json:"isPrimary"`
 	SignerId  string `json:"signerId"`
+	// RevokedAt marks a secondary device whose hot share was deleted (HOT-1).
+	// Read paths treat such rows as absent (HOT-3); the list endpoint still
+	// shows them so a user can see what was revoked.
+	RevokedAt *time.Time `gorm:"index" json:"-"`
+}
+
+// DeviceSummary is the share-less view served by GET /v2/devices (HOT-2).
+type DeviceSummary struct {
+	ID        string `json:"id"`
+	Object    string `json:"object"`
+	CreatedAt int64  `json:"createdAt"`
+	IsPrimary bool   `json:"isPrimary"`
+	Revoked   bool   `json:"revoked"`
+	RevokedAt *int64 `json:"revokedAt,omitempty"`
+}
+
+type DeviceSummaryListResponse struct {
+	Object string          `json:"object"`
+	URL    string          `json:"url"`
+	Data   []DeviceSummary `json:"data"`
+	Start  int             `json:"start"`
+	End    int             `json:"end"`
+	Total  int             `json:"total"`
 }
 
 type Signer struct {
