@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/google/uuid"
@@ -271,5 +272,210 @@ func TestMigratedDataResponseHasOnlyDocumentedFields(t *testing.T) {
 	}
 	if len(got) != 3 || got["id"] != account.ID || got["wallet"] != "w1" || got["former_user"] != "legacy" {
 		t.Fatalf("got %v, want exactly id, wallet and former_user", got)
+	}
+}
+
+// ---- Device list and revocation (HOT-1, HOT-2, HOT-3) ----
+
+func seedSecondaryDevice(t *testing.T, account Account) Device {
+	t.Helper()
+	device, err := newDevice("share-secondary", account.SignerId, false)
+	if err != nil {
+		t.Fatalf("seed secondary device: %v", err)
+	}
+	if err := db.Create(&device).Error; err != nil {
+		t.Fatalf("seed secondary device row: %v", err)
+	}
+	return device
+}
+
+func serve(t *testing.T, method, path, userId, provider string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	apiMux().ServeHTTP(w, asUser(httptest.NewRequest(method, path, nil), userId, provider))
+	return w
+}
+
+func reloadDevice(t *testing.T, id string) Device {
+	t.Helper()
+	var row Device
+	if err := db.First(&row, "id = ?", id).Error; err != nil {
+		t.Fatalf("reload device %s: %v", id, err)
+	}
+	return row
+}
+
+func TestRevokeSecondaryDeviceClearsShareAndHidesIt(t *testing.T) {
+	setupHandlerTest(t)
+	account, _ := seedAccount(t, "alice", "default", "0xrev1")
+	secondary := seedSecondaryDevice(t, account)
+
+	if w := serve(t, http.MethodDelete, "/v2/devices/"+secondary.ID, "alice", "default"); w.Code != http.StatusNoContent {
+		t.Fatalf("revoke got %d, want 204: %s", w.Code, w.Body.String())
+	}
+	row := reloadDevice(t, secondary.ID)
+	if row.Share != "" || row.RevokedAt == nil {
+		t.Fatalf("after revoke share=%q revokedAt=%v, want an empty share and a timestamp", row.Share, row.RevokedAt)
+	}
+	if w := serve(t, http.MethodGet, "/v1/devices/"+secondary.ID, "alice", "default"); w.Code != http.StatusNotFound {
+		t.Fatalf("GET on a revoked device got %d, want 404", w.Code)
+	}
+
+	w := serve(t, http.MethodGet, "/v2/devices", "alice", "default")
+	if w.Code != http.StatusOK {
+		t.Fatalf("list got %d, want 200", w.Code)
+	}
+	var list DeviceSummaryListResponse
+	if err := json.NewDecoder(w.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	var found *DeviceSummary
+	for i := range list.Data {
+		if list.Data[i].ID == secondary.ID {
+			found = &list.Data[i]
+		}
+	}
+	if found == nil || !found.Revoked || found.RevokedAt == nil {
+		t.Fatalf("revoked device in the list: %+v, want revoked:true with revokedAt", found)
+	}
+}
+
+func TestRevokePrimaryDeviceIsRefused(t *testing.T) {
+	setupHandlerTest(t)
+	_, primary := seedAccount(t, "alice", "default", "0xrev2")
+
+	if w := serve(t, http.MethodDelete, "/v2/devices/"+primary.ID, "alice", "default"); w.Code != http.StatusConflict {
+		t.Fatalf("revoke primary got %d, want 409", w.Code)
+	}
+	row := reloadDevice(t, primary.ID)
+	if row.Share != primary.Share || row.RevokedAt != nil {
+		t.Fatalf("primary row changed by a refused revoke: share kept=%v revokedAt=%v", row.Share == primary.Share, row.RevokedAt)
+	}
+}
+
+func TestRevokeIsScopedToOwner(t *testing.T) {
+	setupHandlerTest(t)
+	bobAccount, _ := seedAccount(t, "bob", "default", "0xrev3")
+	bobSecondary := seedSecondaryDevice(t, bobAccount)
+	seedAccount(t, "alice", "default", "0xrev3a")
+
+	if w := serve(t, http.MethodDelete, "/v2/devices/"+bobSecondary.ID, "alice", "default"); w.Code != http.StatusNotFound {
+		t.Fatalf("alice revoking bob's device got %d, want 404", w.Code)
+	}
+	// Same username under another provider is a different subject.
+	if w := serve(t, http.MethodDelete, "/v2/devices/"+bobSecondary.ID, "bob", "google"); w.Code != http.StatusNotFound {
+		t.Fatalf("bob@google revoking bob@default's device got %d, want 404", w.Code)
+	}
+	row := reloadDevice(t, bobSecondary.ID)
+	if row.Share == "" || row.RevokedAt != nil {
+		t.Fatalf("row changed by a non-owner: share empty=%v revokedAt=%v", row.Share == "", row.RevokedAt)
+	}
+}
+
+func TestRevokeTwiceIsNotFound(t *testing.T) {
+	setupHandlerTest(t)
+	account, _ := seedAccount(t, "alice", "default", "0xrev4")
+	secondary := seedSecondaryDevice(t, account)
+
+	if w := serve(t, http.MethodDelete, "/v2/devices/"+secondary.ID, "alice", "default"); w.Code != http.StatusNoContent {
+		t.Fatalf("first revoke got %d, want 204", w.Code)
+	}
+	if w := serve(t, http.MethodDelete, "/v2/devices/"+secondary.ID, "alice", "default"); w.Code != http.StatusNotFound {
+		t.Fatalf("second revoke got %d, want 404", w.Code)
+	}
+}
+
+func TestRevokeRejectsOtherMethods(t *testing.T) {
+	setupHandlerTest(t)
+	account, _ := seedAccount(t, "alice", "default", "0xrev5")
+	secondary := seedSecondaryDevice(t, account)
+
+	if w := serve(t, http.MethodGet, "/v2/devices/"+secondary.ID, "alice", "default"); w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /v2/devices/{id} got %d, want 405", w.Code)
+	}
+	if w := serve(t, http.MethodPost, "/v2/devices", "alice", "default"); w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /v2/devices got %d, want 405", w.Code)
+	}
+}
+
+func TestListDevicesV2OmitsSharesAndOrdersByCreation(t *testing.T) {
+	setupHandlerTest(t)
+	account, primary := seedAccount(t, "alice", "default", "0xlist1")
+	secondary := seedSecondaryDevice(t, account)
+
+	w := serve(t, http.MethodGet, "/v2/devices", "alice", "default")
+	if w.Code != http.StatusOK {
+		t.Fatalf("list got %d, want 200", w.Code)
+	}
+	raw := w.Body.String()
+	if strings.Contains(raw, `"share"`) {
+		t.Fatalf("v2 device list must not carry shares: %s", raw)
+	}
+	var list DeviceSummaryListResponse
+	if err := json.NewDecoder(strings.NewReader(raw)).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if list.Total != 2 || len(list.Data) != 2 {
+		t.Fatalf("got %d devices, want 2", list.Total)
+	}
+	if list.Data[0].ID != primary.ID || !list.Data[0].IsPrimary {
+		t.Fatalf("first entry %+v, want the primary device", list.Data[0])
+	}
+	if list.Data[1].ID != secondary.ID || list.Data[1].IsPrimary || list.Data[1].Revoked {
+		t.Fatalf("second entry %+v, want the live secondary device", list.Data[1])
+	}
+	if list.Data[0].CreatedAt <= 0 || list.Data[0].Object != "device" {
+		t.Fatalf("entry metadata %+v, want createdAt and object", list.Data[0])
+	}
+}
+
+func TestListDevicesV2IsScopedToUserAndProvider(t *testing.T) {
+	setupHandlerTest(t)
+	seedAccount(t, "alice", "default", "0xlist2")
+	seedAccount(t, "bob", "default", "0xlist2b")
+	seedAccount(t, "alice", "google", "0xlist2g")
+
+	w := serve(t, http.MethodGet, "/v2/devices", "alice", "default")
+	var list DeviceSummaryListResponse
+	if err := json.NewDecoder(w.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if list.Total != 1 {
+		t.Fatalf("alice@default sees %d device(s), want only her own", list.Total)
+	}
+}
+
+func TestRevokedDeviceIsHiddenFromV1List(t *testing.T) {
+	setupHandlerTest(t)
+	account, _ := seedAccount(t, "alice", "default", "0xlist3")
+	secondary := seedSecondaryDevice(t, account)
+	if w := serve(t, http.MethodDelete, "/v2/devices/"+secondary.ID, "alice", "default"); w.Code != http.StatusNoContent {
+		t.Fatalf("revoke got %d, want 204", w.Code)
+	}
+
+	w := serve(t, http.MethodGet, "/v1/devices", "alice", "default")
+	var list DeviceListResponse
+	if err := json.NewDecoder(w.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if list.Total != 1 || !list.Data[0].IsPrimary {
+		t.Fatalf("v1 list after revoke: %+v, want only the primary device", list.Data)
+	}
+}
+
+func TestRecoverV2IgnoresRevokedPrimaryLookup(t *testing.T) {
+	setupHandlerTest(t)
+	account, primary := seedAccount(t, "alice", "default", "0xrec1")
+	// Defensive: a primary row cannot be revoked through the API (409), but a row
+	// carrying revoked_at must never be served, whichever way it got there.
+	if err := db.Model(&Device{}).Where("id = ?", primary.ID).Updates(map[string]any{"share": "", "revoked_at": time.Now()}).Error; err != nil {
+		t.Fatalf("mark primary revoked: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v2/devices/recover", strings.NewReader(`{"account":"`+account.ID+`"}`))
+	apiMux().ServeHTTP(w, asUser(r, "alice", "default"))
+	if w.Code == http.StatusOK {
+		t.Fatalf("recover served a revoked primary row: %s", w.Body.String())
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -75,6 +76,12 @@ func apiMux() *http.ServeMux {
 	mux.HandleFunc("/v2/accounts/signer", handleGetSignerV2)
 	mux.HandleFunc("/v2/devices/recover", handleRecoverDeviceV2)
 	mux.HandleFunc("/v2/devices/register", handleRegisterDeviceV2)
+	// Bare path and single-segment wildcard, no method prefix: literal siblings
+	// (/v2/devices/create, /recover, /register) take precedence under the
+	// ServeMux rules, exactly like /v1/devices/{deviceId} above. A method
+	// prefix here would conflict with those method-less literals.
+	mux.HandleFunc("/v2/devices", handleListDevicesV2)
+	mux.HandleFunc("/v2/devices/{deviceId}", handleRevokeDeviceV2)
 	mux.HandleFunc("/v2/accounts/import-share", handleImportShare)
 	mux.HandleFunc("/v2/accounts/migrated-data", handleGetMigratedAccountData)
 	return mux
@@ -228,7 +235,7 @@ func handleRecoverDeviceV2(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var device Device
-	if err := db.First(&device, "signer_id = ? AND is_primary = true", account.SignerId).Error; err != nil {
+	if err := db.First(&device, "signer_id = ? AND is_primary = true AND revoked_at IS NULL", account.SignerId).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			http.Error(w, errNotFound, http.StatusBadRequest)
 			return
@@ -474,7 +481,7 @@ func handleInitDevice(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		var device Device
-		err := db.First(&device, "signer_id = ? AND is_primary = true", account.SignerId).Error
+		err := db.First(&device, "signer_id = ? AND is_primary = true AND revoked_at IS NULL", account.SignerId).Error
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -622,7 +629,7 @@ func handleGetDevice(w http.ResponseWriter, r *http.Request) {
 
 	// Verify device ownership through signer -> account relationship
 	var device Device
-	if err := db.Where("id = ? AND signer_id IN (SELECT signer_id FROM accounts WHERE username = ? AND auth_provider = ?)", deviceId, userId, authProvider).First(&device).Error; err != nil {
+	if err := db.Where("id = ? AND revoked_at IS NULL AND "+ownedDeviceSQL, deviceId, userId, authProvider).First(&device).Error; err != nil {
 		http.Error(w, "device not found", http.StatusNotFound)
 		return
 	}
@@ -663,7 +670,7 @@ func handleGetPrimaryDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var device Device
-	if err := db.Where("signer_id = ? AND is_primary = ?", account.SignerId, true).First(&device).Error; err != nil {
+	if err := db.Where("signer_id = ? AND is_primary = ? AND revoked_at IS NULL", account.SignerId, true).First(&device).Error; err != nil {
 		http.Error(w, errNotFound, http.StatusNotFound)
 		return
 	}
@@ -734,7 +741,7 @@ func handleListDevices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var devices []Device
-	query = db.Where("signer_id IN ?", signerIds)
+	query = db.Where("signer_id IN ? AND revoked_at IS NULL", signerIds)
 	if err := query.Limit(limit).Find(&devices).Error; err != nil {
 		http.Error(w, "failed to list devices", http.StatusInternalServerError)
 		return
@@ -762,6 +769,104 @@ func handleListDevices(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set(contentTypeHeader, contentTypeJSON)
 	json.NewEncoder(w).Encode(resp)
+}
+
+// ownedDeviceSQL scopes a device query to the signers of the subject's own
+// accounts. Every device read or write must carry it: dropping it is an IDOR.
+const ownedDeviceSQL = "signer_id IN (SELECT signer_id FROM accounts WHERE username = ? AND auth_provider = ?)"
+
+// handleListDevicesV2 serves GET /v2/devices: the subject's devices without
+// shares, oldest first, revoked rows included and flagged (HOT-2).
+func handleListDevicesV2(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userId, authProvider, ok := authContext(r)
+	if !ok {
+		unauthorized(w)
+		return
+	}
+
+	var devices []Device
+	if err := db.Where(ownedDeviceSQL, userId, authProvider).Order("created_at ASC").Order("is_primary DESC").Find(&devices).Error; err != nil {
+		http.Error(w, "failed to list devices", http.StatusInternalServerError)
+		return
+	}
+
+	data := make([]DeviceSummary, len(devices))
+	for i, d := range devices {
+		entry := DeviceSummary{
+			ID:        d.ID,
+			Object:    "device",
+			CreatedAt: d.CreatedAt.Unix(),
+			IsPrimary: d.IsPrimary,
+			Revoked:   d.RevokedAt != nil,
+		}
+		if d.RevokedAt != nil {
+			ts := d.RevokedAt.Unix()
+			entry.RevokedAt = &ts
+		}
+		data[i] = entry
+	}
+
+	resp := DeviceSummaryListResponse{
+		Object: "list",
+		URL:    "/v2/devices",
+		Data:   data,
+		Start:  0,
+		End:    len(data) - 1,
+		Total:  len(data),
+	}
+	w.Header().Set(contentTypeHeader, contentTypeJSON)
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleRevokeDeviceV2 serves DELETE /v2/devices/{deviceId}: the hot share of
+// one of the subject's secondary devices is deleted and the row marked revoked
+// (HOT-1). The primary device is refused with 409 because its hot share pairs
+// with the cold share during recovery and cannot be re-split (FC-1). An
+// unknown, foreign, or already revoked device is 404.
+func handleRevokeDeviceV2(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	deviceId := r.PathValue(fieldDeviceId)
+	userId, authProvider, ok := authContext(r)
+	if !ok {
+		unauthorized(w)
+		return
+	}
+
+	var device Device
+	if err := db.Where("id = ? AND revoked_at IS NULL AND "+ownedDeviceSQL, deviceId, userId, authProvider).First(&device).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			http.Error(w, "device not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "database error", http.StatusInternalServerError)
+		return
+	}
+	if device.IsPrimary {
+		http.Error(w, "primary device cannot be revoked", http.StatusConflict)
+		return
+	}
+
+	// The predicate is repeated so a concurrent revoke of the same row cannot
+	// clear it twice; the second caller sees 404 like any other absent row.
+	res := db.Model(&Device{}).
+		Where("id = ? AND is_primary = ? AND revoked_at IS NULL", device.ID, false).
+		Updates(map[string]any{"share": "", "revoked_at": time.Now()})
+	if res.Error != nil {
+		http.Error(w, "failed to revoke device", http.StatusInternalServerError)
+		return
+	}
+	if res.RowsAffected == 0 {
+		http.Error(w, "device not found", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func handleImportShare(w http.ResponseWriter, r *http.Request) {

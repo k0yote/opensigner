@@ -134,7 +134,9 @@ services:
   cold_storage:
     container_name: coldstorage
     platform: linux/amd64
-    image: ghcr.io/openfort-xyz/shield:v0.4.1
+    # Pinned by digest for the same reason as the iframe above: the deploy
+    # pipeline verifies this exact digest with gh attestation verify before use.
+    image: ghcr.io/openfort-xyz/shield@sha256:1bf04743dc86f7b27e5b6e09391c0244401f3c1bbc319a5bea991ff22e8d7288
     command: server
     depends_on:
       postgres:
