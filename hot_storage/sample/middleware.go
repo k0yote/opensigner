@@ -62,6 +62,11 @@ func authMiddleware(next http.Handler) http.Handler {
 		slog.Debug("authenticated request", slog.String("userId", userId))
 		ctx := context.WithValue(r.Context(), fieldUserId, userId)
 		ctx = context.WithValue(ctx, fieldAuthProvider, authProvider)
+		if authProvider == authProviderDefault {
+			// Prototype commit-reveal: the JWT binding and expiry, for the
+			// commit endpoint and the proof check.
+			ctx = withJwtBinding(ctx, r)
+		}
 		authenticatedRequest := r.WithContext(ctx)
 		next.ServeHTTP(w, authenticatedRequest)
 	})

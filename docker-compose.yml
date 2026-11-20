@@ -193,6 +193,8 @@ services:
       DB_SSLMODE: ${HOT_STORAGE_DB_SSLMODE:-require}
       SHARE_ENCRYPTION_KEY: ${SHARE_ENCRYPTION_KEY:?SHARE_ENCRYPTION_KEY must be set (64 hex chars)}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:7050,http://localhost:7051}
+      # Prototype commit-reveal switch (off, share, all); verification branch only.
+      SESSION_PROOF_MODE: ${SESSION_PROOF_MODE:-off}
     networks:
       - frontend_network
       - backend_network

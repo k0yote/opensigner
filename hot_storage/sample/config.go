@@ -31,6 +31,10 @@ var googleAudience = os.Getenv("GOOGLE_JWT_AUDIENCE")
 // keys over a channel an attacker can rewrite.
 var allowInsecureAuthServer = os.Getenv("ALLOW_INSECURE_AUTH_SERVER") == "true"
 
+// sessionProofMode is the prototype commit-reveal switch (verification branch,
+// not for merge): off, share or all. Empty means off.
+var sessionProofMode = os.Getenv("SESSION_PROOF_MODE")
+
 func validateConfig() error {
 	if authServerURL == "" {
 		return fmt.Errorf("AUTH_SERVER_URL environment variable is not set")
@@ -55,6 +59,10 @@ func validateConfig() error {
 	}
 	if expectedAudience == "" {
 		return fmt.Errorf("AUTH_JWT_AUDIENCE must be set (origin of auth_service's BETTER_AUTH_BASE_URL)")
+	}
+
+	if _, err := parseSessionProofMode(sessionProofMode); err != nil {
+		return err
 	}
 	return nil
 }
