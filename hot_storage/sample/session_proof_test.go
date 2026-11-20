@@ -1425,8 +1425,17 @@ func TestProofCheckOrder(t *testing.T) {
 			{"empty session id", http.StatusBadRequest, func() *httptest.ResponseRecorder {
 				return send(withHeader(headerSessionID, ""))
 			}},
+			{"session id that is not a UUID", http.StatusBadRequest, func() *httptest.ResponseRecorder {
+				return send(withHeader(headerSessionID, "not-a-uuid"))
+			}},
 			{"session id of 129 bytes", http.StatusBadRequest, func() *httptest.ResponseRecorder {
 				return send(withHeader(headerSessionID, strings.Repeat("a", 129)))
+			}},
+			{"upper-case session id", http.StatusBadRequest, func() *httptest.ResponseRecorder {
+				return send(withHeader(headerSessionID, strings.ToUpper(c.sessionID)))
+			}},
+			{"session id in braces", http.StatusBadRequest, func() *httptest.ResponseRecorder {
+				return send(withHeader(headerSessionID, "{"+c.sessionID+"}"))
 			}},
 			{"repeated counter header", http.StatusBadRequest, func() *httptest.ResponseRecorder {
 				return send(addHeader(headerSessionCounter, "1"))
@@ -1466,6 +1475,20 @@ func TestProofCheckOrder(t *testing.T) {
 			t.Fatalf("stored counter %d after the rejected requests, want 0", got)
 		}
 		wantShare(t, c.do(f.h, token, rt.method, rt.path, rt.body, 1), "counter 1 after the rejected requests")
+
+		// Signature (401) before counter (409): counter 1 is now used. A caller
+		// without the session key must get 401, not a 409 that would tell it the
+		// session's counter; the session's own key gets the 409.
+		other := newProofClient(t, algEd25519)
+		other.sessionID = c.sessionID
+		foreign := other.proof(rt.method, rt.path, rt.deviceID, rt.body, 1)
+		wantRejected(t, c.do(f.h, token, rt.method, rt.path, rt.body, 1, withHeader(headerSessionSignature, foreign)),
+			http.StatusUnauthorized, "used counter, signed by another key")
+		wantRejected(t, c.do(f.h, token, rt.method, rt.path, rt.body, 1), http.StatusConflict,
+			"used counter, signed by the session key")
+		if got := storedCounter(t, c.sessionID); got != 1 {
+			t.Fatalf("stored counter %d after the used-counter requests, want 1", got)
+		}
 
 		// Step 6 on its own: the JWT is still valid, the stored expiry is not.
 		if err := db.Model(&CommitSession{}).Where("id = ?", c.sessionID).

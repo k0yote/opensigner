@@ -30,7 +30,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -55,9 +54,7 @@ const (
 
 	// maxProofBody is decodeJSON's limit too: the body is read whole for its
 	// hash, then handed to the handler.
-	maxProofBody = 1 << 20
-	// maxSessionIDLen bounds X-Session-Id; session ids are 36-byte UUIDs.
-	maxSessionIDLen    = 128
+	maxProofBody       = 1 << 20
 	proofSignatureSize = 64
 )
 
@@ -331,7 +328,9 @@ func parseProofHeaders(h http.Header) (proofHeaders, error) {
 	}
 
 	p := proofHeaders{sessionID: id[0]}
-	if p.sessionID == "" || len(p.sessionID) > maxSessionIDLen {
+	// Session ids are uuid.NewString() values: only that exact form is
+	// accepted, so nothing else reaches the lookup.
+	if u, err := uuid.Parse(p.sessionID); err != nil || u.String() != p.sessionID {
 		return proofHeaders{}, errProofHeaderMalformed
 	}
 	// A canonical decimal (no sign, leading zero or exponent) below 2^63, the
@@ -365,7 +364,9 @@ func parseProofHeaders(h http.Header) (proofHeaders, error) {
 // The body is read between 6 and 7, up to maxProofBody (beyond it, 413), and
 // handed to next unchanged. The counter moves only after the signature has
 // verified, so a request made without the key cannot use up a session's
-// counters. Nothing here is logged.
+// counters. This code logs nothing itself; X-Session-Id is a canonical UUID
+// before the session lookup, and the lookup avoids gorm's not-found log, so
+// no client-supplied text reaches the service log.
 func requireSessionProof(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proof, err := parseProofHeaders(r.Header)
@@ -383,12 +384,14 @@ func requireSessionProof(next http.Handler) http.Handler {
 		}
 
 		var session CommitSession
-		if err := db.First(&session, "id = ?", proof.sessionID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				unauthorized(w)
-				return
-			}
+		// Find, not First: First logs "record not found" with the SQL.
+		found := db.Where("id = ?", proof.sessionID).Limit(1).Find(&session)
+		if found.Error != nil {
 			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		if found.RowsAffected == 0 {
+			unauthorized(w)
 			return
 		}
 		binding, _, ok := jwtBindingContext(r)
