@@ -11,15 +11,20 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
+	"math"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 // sessionProofTestKey signs the tokens accepted by the JWKS that
@@ -109,22 +114,30 @@ func newProofClient(t *testing.T, alg string) *proofClient {
 // ECDSA P-256 over SHA-256(msg) encoded as 64 bytes r||s.
 func (c *proofClient) sign(t *testing.T, msg []byte) []byte {
 	t.Helper()
+	sig, err := c.signRaw(msg)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	return sig
+}
+
+// signRaw is sign for helpers that have no *testing.T.
+func (c *proofClient) signRaw(msg []byte) ([]byte, error) {
 	switch c.alg {
 	case algEd25519:
-		return ed25519.Sign(c.edKey, msg)
+		return ed25519.Sign(c.edKey, msg), nil
 	case algES256:
 		digest := sha256.Sum256(msg)
 		r, s, err := ecdsa.Sign(rand.Reader, c.ecKey, digest[:])
 		if err != nil {
-			t.Fatalf("failed to sign: %v", err)
+			return nil, fmt.Errorf("failed to sign: %w", err)
 		}
 		sig := make([]byte, 64)
 		r.FillBytes(sig[:32])
 		s.FillBytes(sig[32:])
-		return sig
+		return sig, nil
 	}
-	t.Fatalf("sign: unsupported alg %q", c.alg)
-	return nil
+	return nil, fmt.Errorf("unsupported alg %q", c.alg)
 }
 
 // commit posts this client's public key to /v2/sessions/commit with token. On
@@ -760,4 +773,709 @@ func TestParseVerifiedHonoursNowFunc(t *testing.T) {
 	if _, err := validate(token, server.URL, testIssuer, testAudience); err == nil {
 		t.Fatal("validate accepted a token that has expired by nowFunc")
 	}
+}
+
+// --- The proof check on share-returning routes (V5-E5, E7 to E10, E12) ---
+
+// aliceShare is the share seedAccount stores for alice. Every accepted share
+// request must return it, and no rejected one may.
+const aliceShare = "share-of-alice"
+
+// shareRoute is one share-returning request as the proof tests send it.
+type shareRoute = struct{ name, method, path, body, deviceID string }
+
+// shareRoutes lists the four share-returning requests for alice's seeded
+// account and device: /v1/devices/{deviceId} with a device id and with
+// primary, /v2/devices/recover and /v1/devices/init.
+func shareRoutes(account Account, device Device) []struct{ name, method, path, body, deviceID string } {
+	return []shareRoute{
+		{"get-device", http.MethodGet, "/v1/devices/" + device.ID, "", device.ID},
+		{"get-primary", http.MethodGet, "/v1/devices/primary", "", "primary"},
+		{"recover", http.MethodPost, "/v2/devices/recover", fmt.Sprintf(`{"account":%q}`, account.ID), ""},
+		{"init", http.MethodPost, "/v1/devices/init", fmt.Sprintf(`{"chainId":%d}`, account.ChainId), ""},
+	}
+}
+
+type proofFixture struct {
+	h       http.Handler
+	account Account
+	device  Device
+}
+
+// newProofFixture is setupSessionProofTest plus alice's seeded account.
+func newProofFixture(t *testing.T, mode string) proofFixture {
+	t.Helper()
+	h := setupSessionProofTest(t, mode)
+	account, device := seedAccount(t, "alice", authProviderDefault, "0xa11ce")
+	return proofFixture{h: h, account: account, device: device}
+}
+
+// forEachShareRoute runs fn as one subtest per share route, each with its own
+// database, JWKS and seeded account, so one route's sessions and counters
+// cannot affect another's.
+func forEachShareRoute(t *testing.T, mode string, fn func(t *testing.T, f proofFixture, rt shareRoute)) {
+	t.Helper()
+	for i, probe := range shareRoutes(Account{}, Device{}) {
+		t.Run(probe.name, func(t *testing.T) {
+			f := newProofFixture(t, mode)
+			fn(t, f, shareRoutes(f.account, f.device)[i])
+		})
+	}
+}
+
+// userToken signs a token for sub that expires at exp. jti keeps it distinct
+// from the user's other tokens: EdDSA is deterministic, so equal claims give
+// the same token, the same binding, and a 409 on the second commit.
+func userToken(t *testing.T, sub, jti string, exp time.Time) string {
+	t.Helper()
+	claims := validClaims()
+	claims["sub"], claims["jti"], claims["exp"] = sub, jti, exp.Unix()
+	return sessionToken(t, claims)
+}
+
+func aliceToken(t *testing.T, jti string) string {
+	t.Helper()
+	return userToken(t, "alice", jti, time.Now().Add(time.Hour))
+}
+
+func mustCommit(t *testing.T, h http.Handler, c *proofClient, token string) {
+	t.Helper()
+	if w := c.commit(h, token); w.Code != http.StatusCreated {
+		t.Fatalf("commit got %d, want 201", w.Code)
+	}
+}
+
+func storedCounter(t *testing.T, sessionID string) int64 {
+	t.Helper()
+	var s CommitSession
+	if err := db.First(&s, "id = ?", sessionID).Error; err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	return s.Counter
+}
+
+// fakeClock makes nowFunc return the time the returned pointer holds, for JWT
+// validation and the session expiry check alike, until the test ends.
+func fakeClock(t *testing.T, start time.Time) *time.Time {
+	t.Helper()
+	now := start
+	original := nowFunc
+	nowFunc = func() time.Time { return now }
+	t.Cleanup(func() { nowFunc = original })
+	return &now
+}
+
+// routeDeviceID is the {deviceId} path value the server's route table gives
+// method and path, or "" when the matched pattern has none. The client signs
+// this value, so it is derived with the real patterns and ServeMux rules.
+func routeDeviceID(method, path string) string {
+	var got string
+	mux := http.NewServeMux()
+	for _, rt := range apiRoutes() {
+		mux.HandleFunc(rt.pattern, func(_ http.ResponseWriter, r *http.Request) { got = r.PathValue(fieldDeviceId) })
+	}
+	mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, path, nil))
+	return got
+}
+
+// proof is the X-Session-Signature value c sends for these request facts.
+func (c *proofClient) proof(method, path, deviceID, body string, counter uint64) string {
+	sig, err := c.signRaw(signingInput(proofFields{
+		Method:     method,
+		Path:       path,
+		DeviceID:   deviceID,
+		BodySHA256: sha256.Sum256([]byte(body)),
+		Counter:    counter,
+		SessionID:  c.sessionID,
+	}))
+	if err != nil {
+		panic("proofClient.proof: " + err.Error())
+	}
+	return base64.RawURLEncoding.EncodeToString(sig)
+}
+
+// do sends a request with token as the bearer (none when empty) and a proof
+// for counter, signed with c's key for c's session over the request exactly as
+// built. Each mutate then runs on the request before it is served, so a
+// mutation is a change made after signing.
+func (c *proofClient) do(h http.Handler, token, method, path, body string, counter uint64, mutate ...func(*http.Request)) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	// Always JSON, so a case that switches the method to POST reaches the
+	// proof check rather than contentTypeMiddleware's 415.
+	r.Header.Set(contentTypeHeader, contentTypeJSON)
+	if token != "" {
+		r.Header.Set(headerAuth, headerAuthPrefix+token)
+	}
+	r.Header.Set(headerSessionID, c.sessionID)
+	r.Header.Set(headerSessionCounter, strconv.FormatUint(counter, 10))
+	r.Header.Set(headerSessionSignature, c.proof(r.Method, r.URL.Path, routeDeviceID(r.Method, r.URL.Path), body, counter))
+	for _, m := range mutate {
+		m(r)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+
+// jwtOnly sends a request with the JWT and no proof headers.
+func jwtOnly(h http.Handler, token, method, path, body string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	r.Header.Set(contentTypeHeader, contentTypeJSON)
+	r.Header.Set(headerAuth, headerAuthPrefix+token)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+
+func withHeader(name, value string) func(*http.Request) {
+	return func(r *http.Request) { r.Header.Set(name, value) }
+}
+
+func addHeader(name, value string) func(*http.Request) {
+	return func(r *http.Request) { r.Header.Add(name, value) }
+}
+
+func withoutHeader(name string) func(*http.Request) {
+	return func(r *http.Request) { r.Header.Del(name) }
+}
+
+func withMethod(method string) func(*http.Request) {
+	return func(r *http.Request) { r.Method = method }
+}
+
+func withPath(path string) func(*http.Request) {
+	return func(r *http.Request) { r.URL.Path, r.URL.RawPath = path, "" }
+}
+
+func withBody(body string) func(*http.Request) {
+	return func(r *http.Request) {
+		r.Body = io.NopCloser(strings.NewReader(body))
+		r.ContentLength = int64(len(body))
+	}
+}
+
+func hasShare(w *httptest.ResponseRecorder) bool {
+	return strings.Contains(w.Body.String(), aliceShare)
+}
+
+// wantShare fails unless w is a 200 that carries alice's share, so "accepted"
+// always means the share was returned.
+func wantShare(t *testing.T, w *httptest.ResponseRecorder, what string) {
+	t.Helper()
+	if w.Code != http.StatusOK || !hasShare(w) {
+		t.Fatalf("%s: got %d (share returned: %t), want 200 with the share", what, w.Code, hasShare(w))
+	}
+}
+
+// wantRejected fails unless w has status code and does not carry the share.
+// Bodies are not printed, since a wrongly accepted one would hold the share.
+func wantRejected(t *testing.T, w *httptest.ResponseRecorder, code int, what string) {
+	t.Helper()
+	if hasShare(w) {
+		t.Fatalf("%s: got %d and the response carried the share, want %d", what, w.Code, code)
+	}
+	if w.Code != code {
+		t.Fatalf("%s: got %d, want %d", what, w.Code, code)
+	}
+}
+
+// V5-E5: counters 1, 2 and 3 each return the share. Replaying the counter-2
+// request as it was sent, signature included, is refused, and the stored
+// counter stays at 3.
+func TestProofAllowsIncreasingCountersAndRejectsReplay(t *testing.T) {
+	for _, alg := range []string{algEd25519, algES256} {
+		t.Run(alg, func(t *testing.T) {
+			forEachShareRoute(t, sessionProofShare, func(t *testing.T, f proofFixture, rt shareRoute) {
+				token := aliceToken(t, "e5")
+				c := newProofClient(t, alg)
+				mustCommit(t, f.h, c, token)
+
+				var second string
+				capture := func(r *http.Request) { second = r.Header.Get(headerSessionSignature) }
+				wantShare(t, c.do(f.h, token, rt.method, rt.path, rt.body, 1), "counter 1")
+				wantShare(t, c.do(f.h, token, rt.method, rt.path, rt.body, 2, capture), "counter 2")
+				wantShare(t, c.do(f.h, token, rt.method, rt.path, rt.body, 3), "counter 3")
+
+				replay := c.do(f.h, token, rt.method, rt.path, rt.body, 2, withHeader(headerSessionSignature, second))
+				wantRejected(t, replay, http.StatusConflict, "replay of the counter-2 request")
+				if got := storedCounter(t, c.sessionID); got != 3 {
+					t.Fatalf("stored counter %d after the replay, want 3", got)
+				}
+			})
+		})
+	}
+}
+
+// V5-E7 (a) and (b): the right JWT, session id and counter are not enough.
+// Without a signature, or with one made by another key, nothing is returned
+// and the counter does not move.
+func TestProofRejectsMissingOrForeignSignature(t *testing.T) {
+	for _, alg := range []string{algEd25519, algES256} {
+		t.Run(alg, func(t *testing.T) {
+			forEachShareRoute(t, sessionProofShare, func(t *testing.T, f proofFixture, rt shareRoute) {
+				token := aliceToken(t, "e7ab")
+				c := newProofClient(t, alg)
+				mustCommit(t, f.h, c, token)
+
+				w := c.do(f.h, token, rt.method, rt.path, rt.body, 1, withoutHeader(headerSessionSignature))
+				wantRejected(t, w, http.StatusUnauthorized, "(a) no signature header")
+
+				foreign := newProofClient(t, alg)
+				foreign.sessionID = c.sessionID
+				w = foreign.do(f.h, token, rt.method, rt.path, rt.body, 1)
+				wantRejected(t, w, http.StatusUnauthorized, "(b) signature by another key")
+
+				if got := storedCounter(t, c.sessionID); got != 0 {
+					t.Fatalf("stored counter %d after the rejected requests, want 0", got)
+				}
+				// Counter 1 is still unused, so the session itself was sound.
+				wantShare(t, c.do(f.h, token, rt.method, rt.path, rt.body, 1), "the session's own key, counter 1")
+			})
+		})
+	}
+}
+
+// V5-E8, second half. A record, not a requirement: with a stolen JWT, whoever
+// commits first owns the session. The codes this prototype produces are still
+// asserted, so a change in behaviour shows up.
+func TestFirstCommitterCanFetch(t *testing.T) {
+	forEachShareRoute(t, sessionProofShare, func(t *testing.T, f proofFixture, rt shareRoute) {
+		token := aliceToken(t, "e8")
+		attacker := newProofClient(t, algEd25519)
+		legit := newProofClient(t, algES256)
+
+		attackerCommit := attacker.commit(f.h, token).Code
+		legitCommit := legit.commit(f.h, token).Code
+		attackerFetch := attacker.do(f.h, token, rt.method, rt.path, rt.body, 1)
+		legitPlain := jwtOnly(f.h, token, rt.method, rt.path, rt.body)
+		// The legitimate client may learn the session id, but not the key.
+		// Counter 2 is fresh, so only the signature can refuse this.
+		legit.sessionID = attacker.sessionID
+		legitOnAttackers := legit.do(f.h, token, rt.method, rt.path, rt.body, 2)
+
+		t.Logf("V5-E8 record (%s %s): attacker (stolen JWT, committed first) got commit %d, fetch %d (share returned: %t); "+
+			"legitimate client got commit %d, then %d with the JWT alone and %d with the attacker's session id under its own key",
+			rt.method, rt.name, attackerCommit, attackerFetch.Code, hasShare(attackerFetch),
+			legitCommit, legitPlain.Code, legitOnAttackers.Code)
+		if attackerCommit != http.StatusCreated || legitCommit != http.StatusConflict {
+			t.Fatalf("commits got attacker %d and legitimate %d, want 201 and 409", attackerCommit, legitCommit)
+		}
+		wantShare(t, attackerFetch, "the first committer's fetch")
+		wantRejected(t, legitPlain, http.StatusUnauthorized, "the legitimate client with the JWT alone")
+		wantRejected(t, legitOnAttackers, http.StatusUnauthorized, "the legitimate client on the attacker's session")
+	})
+}
+
+// V5-E7 (c) and (d): a session is usable only with the JWT it was committed
+// with, whoever holds the session's key.
+func TestProofRejectsSessionFromAnotherJWT(t *testing.T) {
+	t.Run("c-other-users-session", func(t *testing.T) {
+		forEachShareRoute(t, sessionProofShare, func(t *testing.T, f proofFixture, rt shareRoute) {
+			aliceJWT := aliceToken(t, "e7c")
+			alice := newProofClient(t, algEd25519)
+			mustCommit(t, f.h, alice, aliceJWT)
+			bob := newProofClient(t, algEd25519)
+			mustCommit(t, f.h, bob, userToken(t, "bob", "e7c", time.Now().Add(time.Hour)))
+
+			// Bob has stolen alice's JWT, which alice has already committed, and
+			// attaches his own session id and a signature by his own key.
+			w := bob.do(f.h, aliceJWT, rt.method, rt.path, rt.body, 1)
+			wantRejected(t, w, http.StatusUnauthorized, "(c) alice's JWT with bob's session and key")
+			if got := storedCounter(t, bob.sessionID); got != 0 {
+				t.Fatalf("bob's stored counter %d after the rejected request, want 0", got)
+			}
+			wantShare(t, alice.do(f.h, aliceJWT, rt.method, rt.path, rt.body, 1), "alice's JWT with her own session")
+		})
+	})
+
+	t.Run("d-same-user-other-jwt", func(t *testing.T) {
+		forEachShareRoute(t, sessionProofShare, func(t *testing.T, f proofFixture, rt shareRoute) {
+			jwt1, jwt2 := aliceToken(t, "e7d-1"), aliceToken(t, "e7d-2")
+			if jwt1 == jwt2 {
+				t.Fatal("test setup: the two JWTs are identical")
+			}
+			c1, c2 := newProofClient(t, algEd25519), newProofClient(t, algEd25519)
+			mustCommit(t, f.h, c1, jwt1)
+			mustCommit(t, f.h, c2, jwt2)
+
+			w := c1.do(f.h, jwt2, rt.method, rt.path, rt.body, 1)
+			wantRejected(t, w, http.StatusUnauthorized, "(d) JWT 2 with session 1 and key 1")
+			if got := storedCounter(t, c1.sessionID); got != 0 {
+				t.Fatalf("session 1's stored counter %d after the rejected request, want 0", got)
+			}
+			wantShare(t, c1.do(f.h, jwt1, rt.method, rt.path, rt.body, 1), "JWT 1 with session 1")
+			wantShare(t, c2.do(f.h, jwt2, rt.method, rt.path, rt.body, 1), "JWT 2 with session 2")
+		})
+	})
+}
+
+// V5-E9. Every case sends the route's own share request with a proof signed
+// for a request that differs from it in exactly one signed field; were that
+// field not covered, the case would return the share. Method, path, body and
+// counter are changed on the request after signing. The deviceId cannot be
+// changed on its own on the wire, since it is a segment of the path (or empty),
+// so for it the signature is made over another deviceId instead.
+func TestProofRejectsAnyTamperedField(t *testing.T) {
+	forEachShareRoute(t, sessionProofShare, func(t *testing.T, f proofFixture, rt shareRoute) {
+		token := aliceToken(t, "e9")
+		c := newProofClient(t, algEd25519)
+		mustCommit(t, f.h, c, token)
+
+		otherMethod := http.MethodPost
+		if rt.method == http.MethodPost {
+			otherMethod = http.MethodGet
+		}
+		// A path whose route gives the same deviceId, so only the path differs.
+		signedPath := "/v2/devices/" + rt.deviceID
+		switch rt.path {
+		case "/v2/devices/recover":
+			signedPath = "/v1/devices/init"
+		case "/v1/devices/init":
+			signedPath = "/v2/devices/recover"
+		}
+		otherBody := "{}"
+		if rt.body != "" {
+			// The same JSON in different bytes: the handler would accept it.
+			otherBody = strings.Replace(rt.body, ":", ": ", 1)
+		}
+		otherDevice := rt.deviceID + "-other"
+		if got := routeDeviceID(rt.method, rt.path); got != rt.deviceID {
+			t.Fatalf("test setup: the route gives deviceId %q, want %q", got, rt.deviceID)
+		}
+		if got := routeDeviceID(rt.method, signedPath); got != rt.deviceID {
+			t.Fatalf("test setup: %s gives deviceId %q, want %q", signedPath, got, rt.deviceID)
+		}
+
+		cases := []struct {
+			field string
+			send  func() *httptest.ResponseRecorder
+		}{
+			{"method", func() *httptest.ResponseRecorder {
+				return c.do(f.h, token, otherMethod, rt.path, rt.body, 1, withMethod(rt.method))
+			}},
+			{"path", func() *httptest.ResponseRecorder {
+				return c.do(f.h, token, rt.method, signedPath, rt.body, 1, withPath(rt.path))
+			}},
+			{"deviceId", func() *httptest.ResponseRecorder {
+				return c.do(f.h, token, rt.method, rt.path, rt.body, 1,
+					withHeader(headerSessionSignature, c.proof(rt.method, rt.path, otherDevice, rt.body, 1)))
+			}},
+			{"body", func() *httptest.ResponseRecorder {
+				return c.do(f.h, token, rt.method, rt.path, otherBody, 1, withBody(rt.body))
+			}},
+			{"counter", func() *httptest.ResponseRecorder {
+				return c.do(f.h, token, rt.method, rt.path, rt.body, 1, withHeader(headerSessionCounter, "2"))
+			}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.field, func(t *testing.T) {
+				wantRejected(t, tc.send(), http.StatusUnauthorized, "tampered "+tc.field)
+			})
+		}
+
+		if got := storedCounter(t, c.sessionID); got != 0 {
+			t.Fatalf("stored counter %d after the tampered requests, want 0", got)
+		}
+		wantShare(t, c.do(f.h, token, rt.method, rt.path, rt.body, 1), "the untampered request")
+	})
+}
+
+// Review Focus 2: the query string is not in the signing input, so a request
+// that carries one is refused before the session is looked at.
+func TestProofRejectsQueryString(t *testing.T) {
+	forEachShareRoute(t, sessionProofShare, func(t *testing.T, f proofFixture, rt shareRoute) {
+		token := aliceToken(t, "query")
+		c := newProofClient(t, algEd25519)
+		mustCommit(t, f.h, c, token)
+
+		// The proof is valid for the path; only the query string is extra.
+		wantRejected(t, c.do(f.h, token, rt.method, rt.path+"?x=1", rt.body, 1), http.StatusBadRequest, "?x=1")
+		if got := storedCounter(t, c.sessionID); got != 0 {
+			t.Fatalf("stored counter %d after the rejected request, want 0", got)
+		}
+		wantShare(t, c.do(f.h, token, rt.method, rt.path, rt.body, 1), "the same request without the query string")
+	})
+}
+
+// Review Focus 3. A correctly signed counter at or below the last accepted
+// one is refused with 409. A header that is not a canonical decimal below
+// 2^63 is refused with 400 before anything is looked up.
+func TestProofRejectsBadCounters(t *testing.T) {
+	forEachShareRoute(t, sessionProofShare, func(t *testing.T, f proofFixture, rt shareRoute) {
+		token := aliceToken(t, "counters")
+		c := newProofClient(t, algEd25519)
+		mustCommit(t, f.h, c, token)
+		wantShare(t, c.do(f.h, token, rt.method, rt.path, rt.body, 5), "counter 5")
+
+		for _, n := range []uint64{0, 5, 4} {
+			wantRejected(t, c.do(f.h, token, rt.method, rt.path, rt.body, n), http.StatusConflict,
+				fmt.Sprintf("counter %d after 5", n))
+		}
+		for _, raw := range []string{"1e3", "-1", "9223372036854775808", "18446744073709551616", "01", "+1", "0x10", ""} {
+			wantRejected(t, c.do(f.h, token, rt.method, rt.path, rt.body, 6, withHeader(headerSessionCounter, raw)),
+				http.StatusBadRequest, fmt.Sprintf("counter header %q", raw))
+		}
+		if got := storedCounter(t, c.sessionID); got != 5 {
+			t.Fatalf("stored counter %d after the rejected requests, want 5", got)
+		}
+		wantShare(t, c.do(f.h, token, rt.method, rt.path, rt.body, 6), "counter 6")
+		wantShare(t, c.do(f.h, token, rt.method, rt.path, rt.body, math.MaxInt64), "counter 2^63-1, the largest accepted")
+	})
+}
+
+// V5-E10, on a fake clock: a session lasts as long as the JWT it was committed
+// with, and is usable only with that JWT.
+func TestSessionLifetimeFollowsJWT(t *testing.T) {
+	t.Run("a-to-d", func(t *testing.T) {
+		forEachShareRoute(t, sessionProofShare, func(t *testing.T, f proofFixture, rt shareRoute) {
+			base := time.Now().Truncate(time.Second)
+			clock := fakeClock(t, base)
+			jwt1 := userToken(t, "alice", "e10-1", base.Add(10*time.Minute))
+			c1 := newProofClient(t, algEd25519)
+			mustCommit(t, f.h, c1, jwt1)
+			wantShare(t, c1.do(f.h, jwt1, rt.method, rt.path, rt.body, 1), "session 1 with JWT 1 before JWT 1 expires")
+
+			*clock = base.Add(10*time.Minute + time.Second)
+			wantRejected(t, c1.do(f.h, jwt1, rt.method, rt.path, rt.body, 2), http.StatusUnauthorized,
+				"(a) session 1 with JWT 1 after JWT 1 expired")
+
+			jwt2 := userToken(t, "alice", "e10-2", base.Add(40*time.Minute))
+			c2 := newProofClient(t, algEd25519)
+			mustCommit(t, f.h, c2, jwt2)
+			wantShare(t, c2.do(f.h, jwt2, rt.method, rt.path, rt.body, 1), "(b) session 2 with JWT 2")
+
+			wantRejected(t, c1.do(f.h, jwt2, rt.method, rt.path, rt.body, 2), http.StatusUnauthorized,
+				"(c) session 1's id and key with JWT 2 after JWT 1 expired")
+			if got := storedCounter(t, c1.sessionID); got != 1 {
+				t.Fatalf("session 1's stored counter %d after the rejected requests, want 1", got)
+			}
+
+			// (d) A reload: a fresh key, the same JWT 2.
+			c3 := newProofClient(t, algEd25519)
+			recommit := c3.commit(f.h, jwt2).Code
+			c3.sessionID = c2.sessionID
+			stuck := c3.do(f.h, jwt2, rt.method, rt.path, rt.body, 2)
+			c3.sessionID = ""
+			jwt3 := userToken(t, "alice", "e10-3", base.Add(70*time.Minute))
+			nextCommit := c3.commit(f.h, jwt3).Code
+			afterNext := c3.do(f.h, jwt3, rt.method, rt.path, rt.body, 1)
+			t.Logf("V5-E10 (d) record (%s): after a reload, the new key's commit with JWT 2 got %d and the new key on session 2 got %d; "+
+				"with the next JWT the commit got %d and the fetch %d (share returned: %t)",
+				rt.name, recommit, stuck.Code, nextCommit, afterNext.Code, hasShare(afterNext))
+			if recommit != http.StatusConflict {
+				t.Fatalf("(d) commit with a fresh key and the same JWT 2 got %d, want 409", recommit)
+			}
+			wantRejected(t, stuck, http.StatusUnauthorized, "(d) the reloaded key on session 2")
+			if nextCommit != http.StatusCreated {
+				t.Fatalf("(d) commit with the next JWT got %d, want 201", nextCommit)
+			}
+			wantShare(t, afterNext, "(d) the reloaded key with the next JWT")
+		})
+	})
+
+	// (e) is a record, not a requirement: §4.3 lets a new commit leave the
+	// user's older session alive until its own JWT expires.
+	t.Run("e", func(t *testing.T) {
+		forEachShareRoute(t, sessionProofShare, func(t *testing.T, f proofFixture, rt shareRoute) {
+			base := time.Now().Truncate(time.Second)
+			clock := fakeClock(t, base)
+			jwt1 := userToken(t, "alice", "e10e-1", base.Add(10*time.Minute))
+			c1 := newProofClient(t, algEd25519)
+			mustCommit(t, f.h, c1, jwt1)
+			wantShare(t, c1.do(f.h, jwt1, rt.method, rt.path, rt.body, 1), "session 1 with JWT 1")
+
+			*clock = base.Add(5 * time.Minute)
+			jwt2 := userToken(t, "alice", "e10e-2", base.Add(40*time.Minute))
+			c2 := newProofClient(t, algEd25519)
+			mustCommit(t, f.h, c2, jwt2)
+
+			w := c1.do(f.h, jwt1, rt.method, rt.path, rt.body, 2)
+			t.Logf("V5-E10 (e) record (%s): after JWT 2 was committed and before JWT 1 expired, session 1 with JWT 1 got %d (share returned: %t)",
+				rt.name, w.Code, hasShare(w))
+			wantShare(t, w, "(e) session 1 with JWT 1 after JWT 2's commit")
+		})
+	})
+}
+
+// V5-E12. A record, not a requirement: with SESSION_PROOF_MODE=all, the three
+// routes the Client App calls directly need a proof too, so the JWT alone no
+// longer reaches them. The commit route stays reachable with the JWT alone.
+func TestModeAllBlocksJWTOnlyRoutes(t *testing.T) {
+	type call struct {
+		method, path string
+		served       int
+	}
+	setup := func(t *testing.T, mode string) (proofFixture, string, []call) {
+		t.Helper()
+		f := newProofFixture(t, mode)
+		secondary, err := newDevice("second-device-share", f.account.SignerId, false)
+		if err != nil {
+			t.Fatalf("seed secondary device: %v", err)
+		}
+		if err := db.Create(&secondary).Error; err != nil {
+			t.Fatalf("seed secondary device row: %v", err)
+		}
+		return f, secondary.ID, []call{
+			{http.MethodGet, "/v2/accounts", http.StatusOK},
+			{http.MethodGet, "/v2/devices", http.StatusOK},
+			{http.MethodDelete, "/v2/devices/" + secondary.ID, http.StatusNoContent},
+		}
+	}
+
+	t.Run("all", func(t *testing.T) {
+		f, secondaryID, calls := setup(t, sessionProofAll)
+		token := aliceToken(t, "e12")
+		codes := make([]int, len(calls))
+		for i, cl := range calls {
+			codes[i] = jwtOnly(f.h, token, cl.method, cl.path, "").Code
+		}
+		c := newProofClient(t, algEd25519)
+		commit := c.commit(f.h, token).Code
+
+		t.Logf("V5-E12 record: with SESSION_PROOF_MODE=all and the JWT alone, GET /v2/accounts got %d, GET /v2/devices got %d, "+
+			"DELETE /v2/devices/{deviceId} got %d; POST /v2/sessions/commit got %d", codes[0], codes[1], codes[2], commit)
+		for i, cl := range calls {
+			if codes[i] != http.StatusUnauthorized {
+				t.Fatalf("%s %s with the JWT alone got %d, want 401", cl.method, cl.path, codes[i])
+			}
+		}
+		if commit != http.StatusCreated {
+			t.Fatalf("commit with the JWT alone got %d, want 201", commit)
+		}
+		var d Device
+		if err := db.First(&d, "id = ?", secondaryID).Error; err != nil {
+			t.Fatalf("load secondary device: %v", err)
+		}
+		if d.RevokedAt != nil || d.Share == "" {
+			t.Fatal("the refused DELETE revoked the device")
+		}
+		wantRejected(t, jwtOnly(f.h, token, http.MethodGet, "/v1/devices/primary", ""), http.StatusUnauthorized,
+			"a share route with the JWT alone")
+
+		// With a proof, the same calls are served.
+		for i, cl := range calls {
+			if w := c.do(f.h, token, cl.method, cl.path, "", uint64(i+1)); w.Code != cl.served {
+				t.Fatalf("%s %s with a proof got %d, want %d", cl.method, cl.path, w.Code, cl.served)
+			}
+		}
+	})
+
+	t.Run("share-serves-them-with-the-JWT-alone", func(t *testing.T) {
+		f, _, calls := setup(t, sessionProofShare)
+		token := aliceToken(t, "e12")
+		for _, cl := range calls {
+			if code := jwtOnly(f.h, token, cl.method, cl.path, "").Code; code != cl.served {
+				t.Fatalf("%s %s with the JWT alone got %d, want %d", cl.method, cl.path, code, cl.served)
+			}
+		}
+	})
+}
+
+// The check order of requireSessionProof, pinned where two checks would give
+// different answers, and the cases the experiments above do not reach.
+func TestProofCheckOrder(t *testing.T) {
+	forEachShareRoute(t, sessionProofShare, func(t *testing.T, f proofFixture, rt shareRoute) {
+		token := aliceToken(t, "order")
+		c := newProofClient(t, algEd25519)
+		mustCommit(t, f.h, c, token)
+
+		valid := c.proof(rt.method, rt.path, rt.deviceID, rt.body, 1)
+		sig, err := base64.RawURLEncoding.DecodeString(valid)
+		if err != nil {
+			t.Fatalf("decode signature: %v", err)
+		}
+		b64 := base64.RawURLEncoding.EncodeToString
+		// 64 bytes encode to 86 characters; the last carries 4 unused bits, so
+		// flipping its lowest bit decodes to the same bytes in a lenient decoder.
+		const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+		last := strings.IndexByte(alphabet, valid[len(valid)-1])
+		nonCanonical := valid[:len(valid)-1] + string(alphabet[last^1])
+		unknownID := uuid.NewString()
+		// An authenticated identity with no JWT binding behind it.
+		injected := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			apiMux().ServeHTTP(w, asUser(r, "alice", authProviderDefault))
+		})
+		send := func(mutate ...func(*http.Request)) *httptest.ResponseRecorder {
+			return c.do(f.h, token, rt.method, rt.path, rt.body, 1, mutate...)
+		}
+
+		cases := []struct {
+			name string
+			want int
+			send func() *httptest.ResponseRecorder
+		}{
+			{"no X-Session-Id", http.StatusUnauthorized, func() *httptest.ResponseRecorder {
+				return send(withoutHeader(headerSessionID))
+			}},
+			{"no X-Session-Counter", http.StatusUnauthorized, func() *httptest.ResponseRecorder {
+				return send(withoutHeader(headerSessionCounter))
+			}},
+			{"no X-Session-Signature", http.StatusUnauthorized, func() *httptest.ResponseRecorder {
+				return send(withoutHeader(headerSessionSignature))
+			}},
+			{"no proof headers", http.StatusUnauthorized, func() *httptest.ResponseRecorder {
+				return jwtOnly(f.h, token, rt.method, rt.path, rt.body)
+			}},
+			{"missing before malformed", http.StatusUnauthorized, func() *httptest.ResponseRecorder {
+				return send(withoutHeader(headerSessionSignature), withHeader(headerSessionCounter, "x"))
+			}},
+			{"missing before query string", http.StatusUnauthorized, func() *httptest.ResponseRecorder {
+				return c.do(f.h, token, rt.method, rt.path+"?x=1", rt.body, 1, withoutHeader(headerSessionSignature))
+			}},
+			{"empty session id", http.StatusBadRequest, func() *httptest.ResponseRecorder {
+				return send(withHeader(headerSessionID, ""))
+			}},
+			{"session id of 129 bytes", http.StatusBadRequest, func() *httptest.ResponseRecorder {
+				return send(withHeader(headerSessionID, strings.Repeat("a", 129)))
+			}},
+			{"repeated counter header", http.StatusBadRequest, func() *httptest.ResponseRecorder {
+				return send(addHeader(headerSessionCounter, "1"))
+			}},
+			{"padded signature", http.StatusBadRequest, func() *httptest.ResponseRecorder {
+				return send(withHeader(headerSessionSignature, base64.URLEncoding.EncodeToString(sig)))
+			}},
+			{"signature with non-canonical trailing bits", http.StatusBadRequest, func() *httptest.ResponseRecorder {
+				return send(withHeader(headerSessionSignature, nonCanonical))
+			}},
+			{"signature outside the base64url alphabet", http.StatusBadRequest, func() *httptest.ResponseRecorder {
+				return send(withHeader(headerSessionSignature, valid[:10]+"+"+valid[11:]))
+			}},
+			{"63-byte signature", http.StatusBadRequest, func() *httptest.ResponseRecorder {
+				return send(withHeader(headerSessionSignature, b64(sig[:63])))
+			}},
+			{"65-byte signature", http.StatusBadRequest, func() *httptest.ResponseRecorder {
+				return send(withHeader(headerSessionSignature, b64(append(append([]byte(nil), sig...), 0))))
+			}},
+			{"query string before session lookup", http.StatusBadRequest, func() *httptest.ResponseRecorder {
+				return c.do(f.h, token, rt.method, rt.path+"?x=1", rt.body, 1, withHeader(headerSessionID, unknownID))
+			}},
+			{"unknown session", http.StatusUnauthorized, func() *httptest.ResponseRecorder {
+				return send(withHeader(headerSessionID, unknownID))
+			}},
+			{"identity without a JWT binding", http.StatusUnauthorized, func() *httptest.ResponseRecorder {
+				return c.do(injected, "", rt.method, rt.path, rt.body, 1)
+			}},
+			{"body over 1 MiB", http.StatusRequestEntityTooLarge, func() *httptest.ResponseRecorder {
+				return c.do(f.h, token, rt.method, rt.path, strings.Repeat(" ", 1<<20+1), 1)
+			}},
+		}
+		for _, tc := range cases {
+			wantRejected(t, tc.send(), tc.want, tc.name)
+		}
+		if got := storedCounter(t, c.sessionID); got != 0 {
+			t.Fatalf("stored counter %d after the rejected requests, want 0", got)
+		}
+		wantShare(t, c.do(f.h, token, rt.method, rt.path, rt.body, 1), "counter 1 after the rejected requests")
+
+		// Step 6 on its own: the JWT is still valid, the stored expiry is not.
+		if err := db.Model(&CommitSession{}).Where("id = ?", c.sessionID).
+			Update("expires_at", nowFunc().Add(-time.Second)).Error; err != nil {
+			t.Fatalf("expire session: %v", err)
+		}
+		wantRejected(t, c.do(f.h, token, rt.method, rt.path, rt.body, 2), http.StatusUnauthorized,
+			"session past its stored expiry, JWT still valid")
+		if got := storedCounter(t, c.sessionID); got != 1 {
+			t.Fatalf("stored counter %d after the expired request, want 1", got)
+		}
+	})
 }

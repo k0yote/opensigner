@@ -62,30 +62,56 @@ func contentTypeMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// apiRoute is one entry of the authenticated route table. returnsShare marks
+// the patterns whose handlers can return a decrypted share.
+type apiRoute struct {
+	pattern      string
+	handler      http.HandlerFunc
+	returnsShare bool
+}
+
+// apiRoutes is the authenticated route table.
+func apiRoutes() []apiRoute {
+	return []apiRoute{
+		{"/v1/devices/init", handleInitDevice, true},
+		{"/v1/devices/register", handleRegisterDevice, false},
+		// Also serves /v1/devices/primary.
+		{"/v1/devices/{deviceId}", handleGetDevice, true},
+		{"/v1/devices", handleGetDevices, false},
+
+		{"/v2/devices/create", handleCreateDeviceV2, false},
+		{"/v2/accounts", handleListAccountsV2, false},
+		{"/v2/accounts/signer", handleGetSignerV2, false},
+		{"/v2/devices/recover", handleRecoverDeviceV2, true},
+		{"/v2/devices/register", handleRegisterDeviceV2, false},
+		// Bare path and single-segment wildcard, no method prefix: literal siblings
+		// (/v2/devices/create, /recover, /register) take precedence under the
+		// ServeMux rules, exactly like /v1/devices/{deviceId} above. A method
+		// prefix here would conflict with those method-less literals.
+		{"/v2/devices", handleListDevicesV2, false},
+		{"/v2/devices/{deviceId}", handleRevokeDeviceV2, false},
+		{"/v2/accounts/import-share", handleImportShare, false},
+		{"/v2/accounts/migrated-data", handleGetMigratedAccountData, false},
+	}
+}
+
 // apiMux holds the authenticated route table, separate from the middleware
 // chain so tests can drive the same routes with an injected identity.
 func apiMux() *http.ServeMux {
+	mode := currentSessionProofMode()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/devices/init", handleInitDevice)
-	mux.HandleFunc("/v1/devices/register", handleRegisterDevice)
-	mux.HandleFunc("/v1/devices/{deviceId}", handleGetDevice)
-	mux.HandleFunc("/v1/devices", handleGetDevices)
-
-	mux.HandleFunc("/v2/devices/create", handleCreateDeviceV2)
-	mux.HandleFunc("/v2/accounts", handleListAccountsV2)
-	mux.HandleFunc("/v2/accounts/signer", handleGetSignerV2)
-	mux.HandleFunc("/v2/devices/recover", handleRecoverDeviceV2)
-	mux.HandleFunc("/v2/devices/register", handleRegisterDeviceV2)
-	// Bare path and single-segment wildcard, no method prefix: literal siblings
-	// (/v2/devices/create, /recover, /register) take precedence under the
-	// ServeMux rules, exactly like /v1/devices/{deviceId} above. A method
-	// prefix here would conflict with those method-less literals.
-	mux.HandleFunc("/v2/devices", handleListDevicesV2)
-	mux.HandleFunc("/v2/devices/{deviceId}", handleRevokeDeviceV2)
-	mux.HandleFunc("/v2/accounts/import-share", handleImportShare)
-	mux.HandleFunc("/v2/accounts/migrated-data", handleGetMigratedAccountData)
+	for _, rt := range apiRoutes() {
+		var h http.Handler = rt.handler
+		// Wrapped per route, inside the mux, so the check can read the path
+		// values of the matched pattern.
+		if proofRequired(mode, rt.returnsShare) {
+			h = requireSessionProof(h)
+		}
+		mux.Handle(rt.pattern, h)
+	}
 	// Prototype commit-reveal (verification branch, not for merge); registered
-	// in every SESSION_PROOF_MODE, off included.
+	// in every SESSION_PROOF_MODE, off included, and never behind the proof
+	// check, which needs the session this route creates.
 	mux.HandleFunc("/v2/sessions/commit", handleCommitSession)
 	return mux
 }
