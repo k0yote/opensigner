@@ -212,7 +212,6 @@ func TestGoogleProviderAcceptsRS256Only(t *testing.T) {
 	const aud = "test-google-client-id"
 	originalURL, originalAud := authProviderGoogleUrl, googleAudience
 	t.Cleanup(func() { authProviderGoogleUrl, googleAudience = originalURL, originalAud })
-	googleAudience = aud
 
 	claims := jwt.MapClaims{
 		"iss": authProviderGoogleIssuer,
@@ -221,32 +220,49 @@ func TestGoogleProviderAcceptsRS256Only(t *testing.T) {
 		"exp": time.Now().Add(time.Hour).Unix(),
 	}
 
+	// Each subtest sets the package variables it needs itself.
 	rsServer, rsKey := startRS256JWKS(t)
-	authProviderGoogleUrl = rsServer.URL
-	token := signRS256Token(t, rsKey, testKid, claims)
+	rsToken := signRS256Token(t, rsKey, testKid, claims)
 
-	sub, err := validateThirdPartyAuth(token, authProviderGoogle)
-	if err != nil {
-		t.Fatalf("a valid RS256 Google token was rejected: %v", err)
-	}
-	if sub != "google-user-1" {
-		t.Fatalf("got sub %q, want %q", sub, "google-user-1")
-	}
-
-	variants := nonCanonicalVariants(token)
-	if len(variants) != 15 {
-		t.Fatalf("got %d variants, want 15", len(variants))
-	}
-	for i, v := range variants {
-		if _, err := validateThirdPartyAuth(v, authProviderGoogle); err == nil {
-			t.Fatalf("variant %d with non-canonical trailing bits was accepted", i)
+	t.Run("RS256 accepted", func(t *testing.T) {
+		authProviderGoogleUrl, googleAudience = rsServer.URL, aud
+		sub, err := validateThirdPartyAuth(rsToken, authProviderGoogle)
+		if err != nil {
+			t.Fatalf("a valid RS256 Google token was rejected: %v", err)
 		}
-	}
+		if sub != "google-user-1" {
+			t.Fatalf("got sub %q, want %q", sub, "google-user-1")
+		}
+	})
 
-	edServer, edKey := startJWKS(t)
-	authProviderGoogleUrl = edServer.URL
-	edToken := signToken(t, edKey, testKid, claims)
-	if _, err := validateThirdPartyAuth(edToken, authProviderGoogle); err == nil {
-		t.Fatal("an EdDSA token was accepted by the Google provider; only RS256 is allowed")
-	}
+	t.Run("non-canonical RS256 variants rejected", func(t *testing.T) {
+		authProviderGoogleUrl, googleAudience = rsServer.URL, aud
+		variants := nonCanonicalVariants(rsToken)
+		if len(variants) != 15 {
+			t.Fatalf("got %d variants, want 15", len(variants))
+		}
+		for i, v := range variants {
+			if _, err := validateThirdPartyAuth(v, authProviderGoogle); err == nil {
+				t.Fatalf("variant %d with non-canonical trailing bits was accepted", i)
+			}
+		}
+	})
+
+	t.Run("EdDSA rejected", func(t *testing.T) {
+		edServer, edKey := startJWKS(t)
+		authProviderGoogleUrl, googleAudience = edServer.URL, aud
+		token := signToken(t, edKey, testKid, claims)
+		if _, err := validateThirdPartyAuth(token, authProviderGoogle); err == nil {
+			t.Fatal("an EdDSA token was accepted by the Google provider; only RS256 is allowed")
+		}
+	})
+
+	t.Run("ES256 rejected", func(t *testing.T) {
+		esServer, esKey := startES256JWKS(t)
+		authProviderGoogleUrl, googleAudience = esServer.URL, aud
+		token := signES256Token(t, esKey, testKid, claims)
+		if _, err := validateThirdPartyAuth(token, authProviderGoogle); err == nil {
+			t.Fatal("an ES256 token was accepted by the Google provider; only RS256 is allowed")
+		}
+	})
 }

@@ -53,6 +53,10 @@ func validateWithMethods(token, jwkURL, expectedIss, expectedAud string, methods
 	if expectedIss == "" || expectedAud == "" {
 		return "", errors.New("issuer/audience not configured for this auth provider")
 	}
+	// jwt.WithValidMethods(nil) skips the signing-method check entirely.
+	if len(methods) == 0 {
+		return "", errors.New("signing methods not configured for this auth provider")
+	}
 
 	k, err := getOrCreateKeyfunc(jwkURL)
 	if err != nil {

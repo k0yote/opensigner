@@ -298,3 +298,18 @@ func TestValidateRejectsNonCanonicalSignatureEncoding(t *testing.T) {
 		}
 	}
 }
+
+// jwt.WithValidMethods(nil) disables the signing-method check, so an empty
+// method list must be refused rather than treated as "any method".
+func TestValidateWithMethodsRejectsEmptyMethodList(t *testing.T) {
+	server, key := startJWKS(t)
+	token := signToken(t, key, testKid, validClaims())
+	if _, err := validateWithMethods(token, server.URL, testIssuer, testAudience, []string{"EdDSA"}); err != nil {
+		t.Fatalf("the token was rejected with an explicit method list: %v", err)
+	}
+	for name, methods := range map[string][]string{"nil": nil, "empty": {}} {
+		if _, err := validateWithMethods(token, server.URL, testIssuer, testAudience, methods); err == nil {
+			t.Fatalf("a valid token was accepted with a %s method list", name)
+		}
+	}
+}
