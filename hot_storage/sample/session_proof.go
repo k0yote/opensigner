@@ -113,6 +113,9 @@ func jwtBinding(token string) (string, error) {
 func checkPublicKey(alg string, key []byte) error {
 	switch alg {
 	case algEd25519:
+		// Length only: small-order public keys (the identity point among them)
+		// are not rejected, and anyone can forge proofs under such a key. A
+		// real implementation must reject them.
 		if len(key) != ed25519.PublicKeySize {
 			return errors.New("Ed25519 public key must be 32 bytes")
 		}

@@ -384,9 +384,36 @@ func TestVerifyProofBothAlgs(t *testing.T) {
 	})
 }
 
+// This documents a known limitation of the prototype, not a desired property.
+// checkPublicKey only checks the Ed25519 key length, so a client can commit a
+// small-order key. Under the identity point (01 followed by 31 zero bytes) the
+// signature R = identity, S = 0 verifies for every message, so anyone can
+// forge proofs for such a session.
+func TestVerifyProofAcceptsForgeryUnderSmallOrderKey(t *testing.T) {
+	identityKey := make([]byte, ed25519.PublicKeySize)
+	identityKey[0] = 0x01
+	trivialSig := make([]byte, ed25519.SignatureSize)
+	trivialSig[0] = 0x01
+
+	if err := checkPublicKey(algEd25519, identityKey); err != nil {
+		t.Fatalf("checkPublicKey rejected the identity key (%v); update this record", err)
+	}
+	for _, f := range []proofFields{
+		{Method: http.MethodGet, Path: "/v1/devices/primary", DeviceID: "primary", BodySHA256: sha256.Sum256(nil), Counter: 1, SessionID: "s1"},
+		{Method: http.MethodPost, Path: "/v2/devices/recover", BodySHA256: sha256.Sum256([]byte(`{"account":"acc_1"}`)), Counter: 2, SessionID: "s2"},
+	} {
+		if !verifyProof(algEd25519, identityKey, signingInput(f), trivialSig) {
+			t.Fatalf("%s %s: the trivial signature did not verify under the identity key; update this record", f.Method, f.Path)
+		}
+	}
+	t.Log("known limitation: an Ed25519 small-order public key is accepted at commit, and proofs under it can be forged by anyone")
+}
+
 func TestCommitOncePerJWT(t *testing.T) {
 	h := setupSessionProofTest(t, sessionProofOff)
 	claims := validClaims()
+	// An expiry no fixed TTL would produce, so ExpiresAt must come from exp.
+	claims["exp"] = time.Now().Add(2*time.Hour + 17*time.Minute).Unix()
 	token := sessionToken(t, claims)
 	exp := claims["exp"].(int64)
 
@@ -447,11 +474,25 @@ func TestCommitOncePerJWT(t *testing.T) {
 		t.Fatalf("stored subject %s@%s, want user-123@default", row.Username, row.AuthProvider)
 	}
 
-	// The binding is per JWT, not per user: a freshly issued token commits.
+	// The binding is per JWT, not per user: a freshly issued token commits. Its
+	// short expiry catches a fixed TTL or a cap from the other side.
 	fresh := validClaims()
 	fresh["jti"] = "second-token"
-	if w := newProofClient(t, algEd25519).commit(h, sessionToken(t, fresh)); w.Code != http.StatusCreated {
+	fresh["exp"] = time.Now().Add(7 * time.Minute).Unix()
+	freshExp := fresh["exp"].(int64)
+	third := newProofClient(t, algEd25519)
+	if w := third.commit(h, sessionToken(t, fresh)); w.Code != http.StatusCreated {
 		t.Fatalf("commit with a different JWT for the same user got %d, want 201", w.Code)
+	}
+	if third.expiresAt != freshExp {
+		t.Fatalf("short-lived token: response expiresAt %d, want the JWT exp %d", third.expiresAt, freshExp)
+	}
+	var freshRow CommitSession
+	if err := db.First(&freshRow, "id = ?", third.sessionID).Error; err != nil {
+		t.Fatalf("load short-lived session: %v", err)
+	}
+	if freshRow.ExpiresAt.Unix() != freshExp {
+		t.Fatalf("short-lived token: stored ExpiresAt %d, want the JWT exp %d", freshRow.ExpiresAt.Unix(), freshExp)
 	}
 }
 
