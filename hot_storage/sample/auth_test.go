@@ -5,6 +5,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func TestGetTokenFromHeader(t *testing.T) {
@@ -202,5 +205,48 @@ func TestIsOriginAllowed(t *testing.T) {
 func TestValidateThirdPartyRejectsPlayFab(t *testing.T) {
 	if _, err := validateThirdPartyAuth("token", authProviderPlayFab); err == nil {
 		t.Fatal("expected the unimplemented playfab provider to be rejected")
+	}
+}
+
+func TestGoogleProviderAcceptsRS256Only(t *testing.T) {
+	const aud = "test-google-client-id"
+	originalURL, originalAud := authProviderGoogleUrl, googleAudience
+	t.Cleanup(func() { authProviderGoogleUrl, googleAudience = originalURL, originalAud })
+	googleAudience = aud
+
+	claims := jwt.MapClaims{
+		"iss": authProviderGoogleIssuer,
+		"aud": aud,
+		"sub": "google-user-1",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	}
+
+	rsServer, rsKey := startRS256JWKS(t)
+	authProviderGoogleUrl = rsServer.URL
+	token := signRS256Token(t, rsKey, testKid, claims)
+
+	sub, err := validateThirdPartyAuth(token, authProviderGoogle)
+	if err != nil {
+		t.Fatalf("a valid RS256 Google token was rejected: %v", err)
+	}
+	if sub != "google-user-1" {
+		t.Fatalf("got sub %q, want %q", sub, "google-user-1")
+	}
+
+	variants := nonCanonicalVariants(token)
+	if len(variants) != 15 {
+		t.Fatalf("got %d variants, want 15", len(variants))
+	}
+	for i, v := range variants {
+		if _, err := validateThirdPartyAuth(v, authProviderGoogle); err == nil {
+			t.Fatalf("variant %d with non-canonical trailing bits was accepted", i)
+		}
+	}
+
+	edServer, edKey := startJWKS(t)
+	authProviderGoogleUrl = edServer.URL
+	edToken := signToken(t, edKey, testKid, claims)
+	if _, err := validateThirdPartyAuth(edToken, authProviderGoogle); err == nil {
+		t.Fatal("an EdDSA token was accepted by the Google provider; only RS256 is allowed")
 	}
 }
