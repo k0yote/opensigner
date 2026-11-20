@@ -18,9 +18,11 @@ const (
 	authProviderGoogle  = "google"
 	authProviderPlayFab = "playfab"
 
-	authProviderGoogleUrl    = "https://www.googleapis.com/oauth2/v3/certs"
 	authProviderGoogleIssuer = "https://accounts.google.com"
 )
+
+// authProviderGoogleUrl is a var only so tests can point it at a local JWKS.
+var authProviderGoogleUrl = "https://www.googleapis.com/oauth2/v3/certs"
 
 var (
 	ErrDuplicateToken = errors.New("only one token delivery method (header or cookie) is allowed")
@@ -65,7 +67,7 @@ func validateThirdPartyAuth(token string, authProvider string) (string, error) {
 		if googleAudience == "" {
 			return "", errors.New("google auth provider is not configured")
 		}
-		return validate(token, authProviderGoogleUrl, authProviderGoogleIssuer, googleAudience)
+		return validateWithMethods(token, authProviderGoogleUrl, authProviderGoogleIssuer, googleAudience, []string{"RS256"})
 	case authProviderPlayFab:
 		return "", errors.New("playfab third party authentication is unimplemented")
 	default:

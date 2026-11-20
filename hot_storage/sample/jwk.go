@@ -37,13 +37,25 @@ func getOrCreateKeyfunc(jwkURL string) (keyfunc.Keyfunc, error) {
 	return k, nil
 }
 
-// validate verifies the token's signature against the key set at jwkURL and
-// enforces the registered claims. expectedIss and expectedAud must be non-empty:
-// without them a token signed by the key set is accepted no matter who issued it
-// or which client it was minted for.
+// validate verifies a token from the first-party auth service, which signs with
+// EdDSA only.
 func validate(token, jwkURL, expectedIss, expectedAud string) (string, error) {
+	return validateWithMethods(token, jwkURL, expectedIss, expectedAud, []string{"EdDSA"})
+}
+
+// validateWithMethods verifies the token's signature against the key set at
+// jwkURL and enforces the registered claims. Only the given signing methods are
+// accepted, and base64url segments must be canonically encoded (no non-zero
+// trailing bits). expectedIss and expectedAud must be non-empty: without them a
+// token signed by the key set is accepted no matter who issued it or which
+// client it was minted for.
+func validateWithMethods(token, jwkURL, expectedIss, expectedAud string, methods []string) (string, error) {
 	if expectedIss == "" || expectedAud == "" {
 		return "", errors.New("issuer/audience not configured for this auth provider")
+	}
+	// jwt.WithValidMethods(nil) skips the signing-method check entirely.
+	if len(methods) == 0 {
+		return "", errors.New("signing methods not configured for this auth provider")
 	}
 
 	k, err := getOrCreateKeyfunc(jwkURL)
@@ -52,7 +64,8 @@ func validate(token, jwkURL, expectedIss, expectedAud string) (string, error) {
 	}
 
 	parsed, err := jwt.Parse(token, k.Keyfunc,
-		jwt.WithValidMethods([]string{"EdDSA", "RS256", "ES256"}),
+		jwt.WithValidMethods(methods),
+		jwt.WithStrictDecoding(),
 		jwt.WithIssuer(expectedIss),
 		jwt.WithAudience(expectedAud),
 		jwt.WithExpirationRequired(),
