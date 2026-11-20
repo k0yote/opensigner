@@ -84,6 +84,9 @@ func apiMux() *http.ServeMux {
 	mux.HandleFunc("/v2/devices/{deviceId}", handleRevokeDeviceV2)
 	mux.HandleFunc("/v2/accounts/import-share", handleImportShare)
 	mux.HandleFunc("/v2/accounts/migrated-data", handleGetMigratedAccountData)
+	// Prototype commit-reveal (verification branch, not for merge); registered
+	// in every SESSION_PROOF_MODE, off included.
+	mux.HandleFunc("/v2/sessions/commit", handleCommitSession)
 	return mux
 }
 

@@ -100,6 +100,21 @@ type Account struct {
 	SignerId     string `json:"signerId"`
 }
 
+// CommitSession is a prototype commit-reveal session (verification branch, not
+// for merge). There is one row per JWT, keyed by its binding (a hash of the
+// token's header and payload); the token itself is never stored.
+type CommitSession struct {
+	ID           string    `gorm:"primaryKey"`
+	JwtBinding   string    `gorm:"uniqueIndex;not null"`
+	Username     string    `gorm:"not null"`
+	AuthProvider string    `gorm:"not null"`
+	Alg          string    `gorm:"not null"`
+	PublicKey    []byte    `gorm:"not null"`
+	Counter      int64     `gorm:"not null"`
+	ExpiresAt    time.Time `gorm:"not null"`
+	CreatedAt    time.Time
+}
+
 type MigratedAccountData struct {
 	gorm.Model
 	ID              string `gorm:"primaryKey" json:"id"`
