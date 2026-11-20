@@ -124,6 +124,32 @@ func requireVerified(counts map[string]int) error {
 	return nil
 }
 
+// rowResult is the outcome for one row: Skip is set for ok:false rows, Err for
+// ok:true rows that failed verification.
+type rowResult struct {
+	Skip string
+	Err  error
+}
+
+// verifyBrowserRows checks every row, counts the ok:true rows that verified per
+// algorithm, and returns an error when none did.
+func verifyBrowserRows(rows []browserRow, msg []byte) (map[string]int, []rowResult, error) {
+	counts := map[string]int{}
+	results := make([]rowResult, len(rows))
+	for i, row := range rows {
+		if !row.OK {
+			results[i].Skip = "browser could not sign: " + row.ErrorName
+			continue
+		}
+		if err := checkBrowserRow(row, msg); err != nil {
+			results[i].Err = err
+			continue
+		}
+		counts[row.Alg]++
+	}
+	return counts, results, requireVerified(counts)
+}
+
 func loadBrowserRows(path string) ([]browserRow, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -158,25 +184,23 @@ func TestVerifyBrowserSignatures(t *testing.T) {
 	if err := checkGetDeviceVector(msg); err != nil {
 		t.Fatal(err)
 	}
-	verified := map[string]int{}
+	counts, results, verr := verifyBrowserRows(rows, msg)
 	for i, row := range rows {
-		row := row
+		res := results[i]
 		t.Run(row.Alg+"/"+browserLabel(row.UA, i), func(t *testing.T) {
-			if !row.OK {
-				t.Skipf("browser could not sign: %s", row.ErrorName)
+			if res.Skip != "" {
+				t.Skip(res.Skip)
 			}
-			if err := checkBrowserRow(row, msg); err != nil {
-				t.Error(err)
-				return
+			if res.Err != nil {
+				t.Error(res.Err)
 			}
-			verified[row.Alg]++
 		})
 	}
-	for alg, n := range verified {
+	for alg, n := range counts {
 		t.Logf("verified %s rows: %d", alg, n)
 	}
-	if err := requireVerified(verified); err != nil {
-		t.Error(err)
+	if verr != nil {
+		t.Error(verr)
 	}
 }
 
@@ -287,18 +311,45 @@ func TestBrowserSignatureVerifier(t *testing.T) {
 	if err := requireVerified(map[string]int{algES256: 1}); err != nil {
 		t.Errorf("one verified row: got %v", err)
 	}
-	// A file of only ok:false rows verifies nothing.
-	failedFile := filepath.Join(t.TempDir(), "failed.json")
-	failedData := `[{"exp":"V5-E11","ua":"x","alg":"Ed25519","ok":false,"errorName":"NotSupportedError"}]`
-	if err := os.WriteFile(failedFile, []byte(failedData), 0o600); err != nil {
-		t.Fatal(err)
+	// Whole-file behaviour, through the same helper TestVerifyBrowserSignatures uses.
+	writeRows := func(rs ...browserRow) []browserRow {
+		f := filepath.Join(t.TempDir(), "rows.json")
+		d, err := json.Marshal(rs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, d, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := loadBrowserRows(f)
+		if err != nil || len(loaded) != len(rs) {
+			t.Fatalf("rows file not loaded as written: %v", err)
+		}
+		return loaded
 	}
-	failedRows, err := loadBrowserRows(failedFile)
-	if err != nil || len(failedRows) != 1 || failedRows[0].OK {
-		t.Fatalf("failed-row file not loaded as expected: %v", err)
+	failedES := browserRow{Exp: "V5-E11", UA: "x", Alg: algES256, OK: false, ErrorName: "NotSupportedError"}
+	failedEd := failedES
+	failedEd.Alg = algEd25519
+	// (a) only ok:false rows: nothing verified, counts empty
+	counts, results, verr := verifyBrowserRows(writeRows(failedEd, failedES), msg)
+	if verr == nil || !strings.Contains(verr.Error(), "nothing verified") || len(counts) != 0 {
+		t.Errorf("only ok:false rows: counts=%v err=%v", counts, verr)
 	}
-	if err := requireVerified(map[string]int{}); err == nil {
-		t.Error("only ok:false rows must read as nothing verified")
+	if results[0].Skip == "" || !strings.Contains(results[0].Skip, "NotSupportedError") {
+		t.Errorf("ok:false row not skipped with its errorName: %q", results[0].Skip)
+	}
+	// (b) a valid Ed25519 row and an ok:false ES256 row: no error, {Ed25519: 1}
+	counts, _, verr = verifyBrowserRows(writeRows(goRow(t, algEd25519, msg), failedES), msg)
+	if verr != nil || len(counts) != 1 || counts[algEd25519] != 1 {
+		t.Errorf("valid plus ok:false: counts=%v err=%v", counts, verr)
+	}
+	// (c) a valid row plus an ok:true row signed over another input: the bad row fails and is not counted
+	counts, results, verr = verifyBrowserRows(writeRows(goRow(t, algES256, msg), goRow(t, algES256, otherMsg)), msg)
+	if verr != nil || counts[algES256] != 1 {
+		t.Errorf("valid plus invalid: counts=%v err=%v", counts, verr)
+	}
+	if results[0].Err != nil || results[1].Err == nil || !strings.Contains(results[1].Err.Error(), "does not verify") {
+		t.Errorf("invalid row not reported as failed: %v / %v", results[0].Err, results[1].Err)
 	}
 	// A row without the extractable field is refused, not read as false.
 	missing := goRow(t, algEd25519, msg)
